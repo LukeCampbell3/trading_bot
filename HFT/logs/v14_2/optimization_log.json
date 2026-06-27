@@ -1,0 +1,158 @@
+{
+  "phase1": [
+    {
+      "iteration": 0,
+      "score": 0.9259635040511238,
+      "param": "START",
+      "value": 0,
+      "improved": true
+    },
+    {
+      "iteration": 1,
+      "score": 1.0190189547294697,
+      "param": "confirm_min_directional_atr",
+      "value": 0.22,
+      "improved": true
+    },
+    {
+      "iteration": 1,
+      "score": 1.0743247646857885,
+      "param": "confirm_max_adverse_atr",
+      "value": 0.21,
+      "improved": true
+    },
+    {
+      "iteration": 1,
+      "score": 1.243483344704842,
+      "param": "core_target_pct",
+      "value": 0.67,
+      "improved": true
+    },
+    {
+      "iteration": 1,
+      "score": 1.244224304877224,
+      "param": "package_stop_pct",
+      "value": -0.21,
+      "improved": true
+    },
+    {
+      "iteration": 1,
+      "score": 1.2458949315478505,
+      "param": "soft_greed_target_pct",
+      "value": 1.0,
+      "improved": true
+    },
+    {
+      "iteration": 2,
+      "score": 1.246607826186802,
+      "param": "confirm_min_directional_atr",
+      "value": 0.19,
+      "improved": true
+    },
+    {
+      "iteration": 2,
+      "score": 1.251627906508087,
+      "param": "core_target_pct",
+      "value": 0.75,
+      "improved": true
+    },
+    {
+      "iteration": 3,
+      "score": 1.4219832081393573,
+      "param": "confirm_min_directional_atr",
+      "value": 0.16,
+      "improved": true
+    },
+    {
+      "iteration": 4,
+      "score": 1.4219832081393577,
+      "param": "confirm_min_directional_atr",
+      "value": 0.13,
+      "improved": true
+    },
+    {
+      "iteration": 5,
+      "score": 1.4219832081393577,
+      "param": "CONVERGED",
+      "value": 0,
+      "improved": false
+    }
+  ],
+  "phase2": [
+    {
+      "iteration": 0,
+      "score": 1.6347186993588243,
+      "param": "START",
+      "value": 0,
+      "improved": true
+    },
+    {
+      "iteration": 1,
+      "score": 1.6347186993588243,
+      "param": "CONVERGED",
+      "value": 0,
+      "improved": false
+    }
+  ],
+  "final_config": {
+    "version": "14.2",
+    "base_engine": "V12_2_WINRATE_REALISM_BLEND",
+    "status": "SYNTHETIC_VALIDATED_NOT_REAL_QUOTE_PROVEN",
+    "default_mode": "PAPER_OR_REPLAY_ONLY",
+    "live_trading_enabled": false,
+    "instrument": "CALL_AND_PUT_DEBIT_SPREADS_ONLY",
+    "order_type": "LIMIT_ONLY",
+    "order_class": "MLEG",
+    "base_signal_mode": "WATCH_ONLY",
+    "entry_requires_confirmation": true,
+    "entry_requires_spread_quality": true,
+    "no_real_money_base_spread": true,
+    "routes_allowed": [
+      "VWAP_PULLBACK",
+      "PULLBACK_CONTINUATION",
+      "DOMINANT_TREND_PULLBACK",
+      "PUT_REJECTION"
+    ],
+    "routes_soft_only": [
+      "RAW_BREAKOUT",
+      "LATE_BREAKOUT",
+      "NEWS_SPIKE"
+    ],
+    "watch_min_route_score": 0.58,
+    "watch_min_ic_spread": 0.028,
+    "watch_min_ev_over_debit": 0.127,
+    "watch_min_option_liquidity": 0.623,
+    "confirm_min_directional_atr": 0.13,
+    "confirm_max_adverse_atr": 0.21,
+    "confirm_min_mfe_velocity": 0.35,
+    "max_option_mid_inflation": 0.1,
+    "max_composite_spread_pct_of_mid": 0.126,
+    "max_limit_chase_pct_of_debit": 0.034,
+    "max_move_consumed_pct": 0.474,
+    "package_min_q": 0.626,
+    "package_min_pwin": 0.581,
+    "max_env_stress": 0.252,
+    "hi_iv_min_q": 0.75,
+    "max_original_debit": 245.7,
+    "package_debit_scale": 1.014,
+    "max_package_debit": 229.36,
+    "core_fraction": 0.72,
+    "runner_fraction": 0.28,
+    "core_target_pct": 0.75,
+    "runner_target_pct": 2.5,
+    "runner_lock_pct": 0.066,
+    "package_stop_pct": -0.21,
+    "fallback": "V12_SINGLE_SPREAD",
+    "fallback_loss_cut": 0.009,
+    "fallback_win_haircut": 0.011,
+    "soft_greed_target_pct": 1.0,
+    "full_greed_target_pct": 0.95,
+    "single_spread_initial_stop_pct": -0.3,
+    "max_trades_per_day": 3,
+    "max_trades_per_week": 5,
+    "max_same_underlying_trades_per_week": 2,
+    "daily_kill_loss_pct": -0.1,
+    "weekly_kill_loss_pct": -0.073,
+    "max_open_debit_exposure_pct": 0.28
+  }
+}

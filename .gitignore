@@ -1,0 +1,63 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.local
+.env.*
+
+# Logs
+*.log
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local data and caches
+cache/
+*.csv
+*.json
+*.pkl
+*.pickle
+*.h5
+*.keras
+*.weights.h5
+*.bin
+*.parquet
+*.sqlite
+*.db
+
+# IDE/editor files
+.vscode/
+.idea/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+
+# Large binary artifacts
+*.zip
+*.tar.gz
+*.tgz
+*.gz
+*.rar
+*.7z
+
+# Local model artifacts
+model/
+HFT/model/
