@@ -93,10 +93,11 @@ class PackageBuilder:
         route: str,
         account_buying_power: float,
         current_iv: float = 0.0,
+        cfg_override: Optional[dict] = None,
     ) -> PackageResult:
         """
         Attempt to build a core-runner package.
-        
+
         Parameters:
             quality_report: SpreadQualityReport from the spread quality gate
             quality_score: Composite quality score [0,1]
@@ -105,7 +106,11 @@ class PackageBuilder:
             route: Route name
             account_buying_power: Available buying power in dollars
             current_iv: Current implied volatility
+            cfg_override: optional per-route confidence-adjusted thresholds
+                (see strategy.dynamic_gate_controller); missing keys fall
+                back to the base config this builder was constructed with.
         """
+        cfg = {**self.cfg, **(cfg_override or {})}
         result = PackageResult()
         spread_mid = quality_report.spread_mid
         debit_per_contract = spread_mid * 100  # per-contract cost in dollars
@@ -117,9 +122,9 @@ class PackageBuilder:
 
         # ─── Package Qualification Checks ────────────────────────────────
         # Check 1: Quality score
-        q_threshold = self.cfg["package_min_q"]
+        q_threshold = cfg["package_min_q"]
         if current_iv > 0.5:  # High IV regime
-            q_threshold = self.cfg["hi_iv_min_q"]
+            q_threshold = cfg["hi_iv_min_q"]
 
         if quality_score < q_threshold:
             result.is_fallback = True
@@ -127,15 +132,15 @@ class PackageBuilder:
             return self._build_fallback(result, debit_per_contract, account_buying_power)
 
         # Check 2: Win probability
-        if pwin < self.cfg["package_min_pwin"]:
+        if pwin < cfg["package_min_pwin"]:
             result.is_fallback = True
-            result.fallback_reason = f"pwin_too_low: {pwin:.4f} < {self.cfg['package_min_pwin']}"
+            result.fallback_reason = f"pwin_too_low: {pwin:.4f} < {cfg['package_min_pwin']}"
             return self._build_fallback(result, debit_per_contract, account_buying_power)
 
         # Check 3: Environment stress
-        if env_stress > self.cfg["max_env_stress"]:
+        if env_stress > cfg["max_env_stress"]:
             result.is_fallback = True
-            result.fallback_reason = f"env_stress: {env_stress:.4f} > {self.cfg['max_env_stress']}"
+            result.fallback_reason = f"env_stress: {env_stress:.4f} > {cfg['max_env_stress']}"
             return self._build_fallback(result, debit_per_contract, account_buying_power)
 
         # Check 4: Route must be package-eligible (not soft-only)

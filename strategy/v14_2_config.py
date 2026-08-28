@@ -85,12 +85,50 @@ V14_2_CORE_RUNNER_REPLACEMENT = {
     "single_spread_initial_stop_pct": -0.16,
 
     # ─── Risk Limits ─────────────────────────────────────────────────────
+    # NOTE: max_trades_per_day/week are no longer hard blockers on their own.
+    # RiskManager now derives how many trades the account can still afford
+    # from capital headroom under max_open_debit_exposure_pct (dynamic,
+    # opportunity-responsive). These two values now serve only as the
+    # *soft baseline* the dynamic calc starts from before capital headroom
+    # and the absolute circuit-breaker ceilings below bound it.
     "max_trades_per_day": 2,
     "max_trades_per_week": 5,
     "max_same_underlying_trades_per_week": 2,
     "daily_kill_loss_pct": -0.053,
     "weekly_kill_loss_pct": -0.073,
     "max_open_debit_exposure_pct": 0.28,
+
+    # ─── Dynamic Gate Control ──────────────────────────────────────────────
+    # Capital protection stays hard (kill switches + exposure cap above are
+    # never loosened). Everything below adapts within bounded ranges so the
+    # bot can take more of the *good* setups it finds instead of stopping
+    # dead at an arbitrary trade count, while a route/environment on a cold
+    # streak gets harder to enter (not permanently frozen).
+    "dynamic_gates_enabled": True,
+
+    # Circuit breakers: even with abundant capital headroom, cadence can
+    # never exceed these — guards against a data glitch or feedback loop
+    # spamming orders. Set comfortably above the old static caps so capital
+    # headroom (not an arbitrary count) is normally the binding constraint.
+    "absolute_max_trades_per_day_ceiling": 8,
+    "absolute_max_trades_per_week_ceiling": 20,
+
+    # How far a route's entry thresholds may adapt from their base value.
+    # 0.85 = proven route can require 15% less to enter; 1.25 = a cold route
+    # needs 25% more before it's admitted. Spread-quality/execution-risk
+    # checks are never scaled — only opportunity-selection thresholds are.
+    "gate_multiplier_min": 0.85,
+    "gate_multiplier_max": 1.25,
+
+    # A route/environment that would previously have been permanently
+    # DISABLED/BLOCKED instead goes on cooldown, then gets a small number of
+    # size-reduced "probation" trades to re-earn full trust with fresh data.
+    "route_probation_cooldown_hours": 24,
+    "route_probation_trade_limit": 1,
+    "route_probation_size_multiplier": 0.5,
+    "env_probation_cooldown_hours": 12,
+    "env_probation_trade_limit": 1,
+    "env_probation_size_multiplier": 0.5,
 }
 
 

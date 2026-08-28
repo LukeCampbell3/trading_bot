@@ -17,7 +17,7 @@ Routes:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 from strategy.v14_2_config import V14_2_CORE_RUNNER_REPLACEMENT as CFG
 
@@ -56,12 +56,18 @@ class RouteConditioner:
         price_15m_ago: float,
         option_liquidity: float = 0.7,
         iv_percentile: float = 0.5,
+        min_score_overrides: Optional[Dict[str, float]] = None,
     ) -> List[RouteCandidate]:
         """
         Score all routes based on current market conditions.
         Returns sorted list of qualifying candidates (score >= watch_min).
+
+        min_score_overrides: optional {route: min_score} map of confidence-
+        adjusted thresholds (see strategy.dynamic_gate_controller) applied
+        per-route instead of the single static watch_min_route_score.
         """
         candidates = []
+        overrides = min_score_overrides or {}
 
         if atr <= 0 or price <= 0:
             return candidates
@@ -136,8 +142,11 @@ class RouteConditioner:
             c.ic_spread = self._estimate_ic_spread(c.score, iv_percentile)
             c.ev_over_debit = self._estimate_ev_over_debit(c.score, c.expected_move, atr)
 
-        # Filter by minimum watch score
-        candidates = [c for c in candidates if c.score >= self.cfg["watch_min_route_score"]]
+        # Filter by minimum watch score (per-route override if supplied)
+        candidates = [
+            c for c in candidates
+            if c.score >= overrides.get(c.route, self.cfg["watch_min_route_score"])
+        ]
         candidates.sort(key=lambda x: x.score, reverse=True)
         return candidates
 

@@ -622,13 +622,43 @@ class TestRiskManager:
         assert not result.allowed
         assert "REVENGE" in result.reason
 
-    def test_max_trades_per_day_enforced(self):
-        """Max trades per day limit enforced."""
-        for _ in range(2):  # Config max is 2
-            self.rm.record_trade("AAPL", "VWAP_PULLBACK", 100.0)
+    def test_dynamic_daily_capacity_exceeds_old_static_cap_when_capital_allows(self):
+        """
+        Trade cadence is now derived from capital headroom, not a fixed
+        count: with abundant headroom, more than the old static cap of 2
+        opportune trades are allowed in a day.
+        """
+        for i in range(5):
+            self.rm.record_trade(f"SYM{i}", "VWAP_PULLBACK", 100.0)
         result = self.rm.pre_trade_check("TSLA", "VWAP_PULLBACK", 100.0)
+        assert result.allowed
+
+    def test_dynamic_capacity_throttled_by_exposure_not_count(self):
+        """When exposure headroom is nearly consumed, capital blocks the trade — not an arbitrary count."""
+        self.rm.add_open_position("AAPL", 27900.0)  # 27.9% of 100k equity
+        result = self.rm.pre_trade_check("TSLA", "VWAP_PULLBACK", 5000.0)
         assert not result.allowed
-        assert "MAX_TRADES_PER_DAY" in result.reason
+        assert "EXPOSURE" in result.reason
+
+    def test_absolute_daily_circuit_breaker_still_caps_cadence(self):
+        """Even with abundant capital, an absolute ceiling prevents runaway cadence."""
+        ceiling = self.rm.cfg["absolute_max_trades_per_day_ceiling"]
+        for i in range(ceiling):
+            self.rm.record_trade(f"SYM{i}", "VWAP_PULLBACK", 10.0)
+        result = self.rm.pre_trade_check("TSLA", "VWAP_PULLBACK", 10.0)
+        assert not result.allowed
+        assert "DYNAMIC_DAILY_CAPACITY" in result.reason
+
+    def test_max_same_underlying_override_widens_cap_for_favored_route(self):
+        """A caller-supplied override (e.g. from DynamicGateController) can raise the same-underlying cap."""
+        for _ in range(2):
+            self.rm.record_trade("AAPL", "VWAP_PULLBACK", 100.0)
+        blocked = self.rm.pre_trade_check("AAPL", "VWAP_PULLBACK", 100.0)
+        assert not blocked.allowed  # default cap of 2 still enforced without override
+        allowed = self.rm.pre_trade_check(
+            "AAPL", "VWAP_PULLBACK", 100.0, max_same_underlying_override=3
+        )
+        assert allowed.allowed
 
     def test_exposure_limit_enforced(self):
         """Max open debit exposure percentage enforced."""

@@ -57,6 +57,13 @@ class WatchTicket:
     environment_state: Dict[str, Any] = field(default_factory=dict)
     status: TicketStatus = TicketStatus.WATCHING
 
+    # Dynamic gate state (see strategy.dynamic_gate_controller). Populated
+    # at ticket creation; drives position sizing and probation bookkeeping
+    # downstream in execution.
+    route_gate_state: str = "ACTIVE"       # ACTIVE, SOFT_SIZE_ONLY, PROBATION
+    env_gate_state: str = "ALLOWED"        # ALLOWED, PROBATION
+    size_multiplier: float = 1.0           # applied to package/fallback sizing
+
     # Confirmation data (populated on confirm)
     timestamp_confirmed: Optional[datetime] = None
     directional_move_atr: float = 0.0
@@ -69,15 +76,27 @@ class WatchTicket:
     exit_reason: str = ""
     realized_pnl: float = 0.0
 
-    def passes_watch_admission(self) -> bool:
-        """Check if this candidate passes watch-stage admission gates."""
-        if self.route_score < CFG["watch_min_route_score"]:
+    def passes_watch_admission(self, cfg_override: Optional[Dict[str, float]] = None) -> bool:
+        """
+        Check if this candidate passes watch-stage admission gates.
+
+        cfg_override lets the caller supply per-route, confidence-adjusted
+        thresholds (see strategy.dynamic_gate_controller) instead of the
+        static base config; any key not present falls back to the base CFG.
+        """
+        cfg = cfg_override or {}
+        min_route_score = cfg.get("watch_min_route_score", CFG["watch_min_route_score"])
+        min_ic_spread = cfg.get("watch_min_ic_spread", CFG["watch_min_ic_spread"])
+        min_ev_over_debit = cfg.get("watch_min_ev_over_debit", CFG["watch_min_ev_over_debit"])
+        min_option_liquidity = cfg.get("watch_min_option_liquidity", CFG["watch_min_option_liquidity"])
+
+        if self.route_score < min_route_score:
             return False
-        if self.ic_spread < CFG["watch_min_ic_spread"]:
+        if self.ic_spread < min_ic_spread:
             return False
-        if self.expected_ev_over_debit < CFG["watch_min_ev_over_debit"]:
+        if self.expected_ev_over_debit < min_ev_over_debit:
             return False
-        if self.option_liquidity_score < CFG["watch_min_option_liquidity"]:
+        if self.option_liquidity_score < min_option_liquidity:
             return False
         return True
 
@@ -162,16 +181,21 @@ class WatchTicketBook:
                     "exit_reason", "realized_pnl"
                 ])
 
-    def create_ticket(self, **kwargs) -> Optional[WatchTicket]:
+    def create_ticket(
+        self, cfg_override: Optional[Dict[str, float]] = None, **kwargs
+    ) -> Optional[WatchTicket]:
         """
         Attempt to create a watch ticket. Returns ticket if admission passes, else None.
         Base signal creates watch ticket ONLY. Watch ticket does NOT submit order.
+
+        cfg_override: optional per-route confidence-adjusted admission
+        thresholds from DynamicGateController; falls back to base config.
         """
         ticket = WatchTicket(**kwargs)
         if ticket.timestamp_created is None:
             ticket.timestamp_created = datetime.utcnow()
 
-        if not ticket.passes_watch_admission():
+        if not ticket.passes_watch_admission(cfg_override):
             self._log_event(ticket, "REJECTED_AT_WATCH")
             return None
 

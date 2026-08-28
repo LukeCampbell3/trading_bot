@@ -155,6 +155,7 @@ class RiskManager:
         is_raw_long_call: bool = False,
         is_equity_scalp: bool = False,
         is_breakout_full_greed: bool = False,
+        max_same_underlying_override: Optional[int] = None,
     ) -> RiskCheckResult:
         """
         Comprehensive pre-trade risk check. Must pass ALL checks before execution.
@@ -218,31 +219,16 @@ class RiskManager:
             self._log_event("BLOCKED_BREAKOUT_GREED", f"symbol={symbol}")
             return result
 
-        # ─── Rate Limits ─────────────────────────────────────────────────
-        trades_today = self._count_trades_today()
-        if trades_today >= self.cfg["max_trades_per_day"]:
-            result.allowed = False
-            result.reason = f"MAX_TRADES_PER_DAY: {trades_today}/{self.cfg['max_trades_per_day']}"
-            result.risk_level = "BLOCKED"
-            return result
-
-        trades_this_week = self._count_trades_this_week()
-        if trades_this_week >= self.cfg["max_trades_per_week"]:
-            result.allowed = False
-            result.reason = f"MAX_TRADES_PER_WEEK: {trades_this_week}/{self.cfg['max_trades_per_week']}"
-            result.risk_level = "BLOCKED"
-            return result
-
-        symbol_trades = self._symbol_trades_this_week.get(symbol, 0)
-        if symbol_trades >= self.cfg["max_same_underlying_trades_per_week"]:
-            result.allowed = False
-            result.reason = f"MAX_SAME_UNDERLYING: {symbol} has {symbol_trades} this week"
-            result.risk_level = "BLOCKED"
-            return result
-
-        # ─── Exposure Limits ─────────────────────────────────────────────
-        if self._account_equity > 0:
-            current_exposure = sum(self._open_positions.values())
+        # ─── Exposure Limits (the real capital protection) ────────────────
+        # Checked before cadence so a dynamic capacity calc always has an
+        # accurate headroom number, and so exposure is the terminal reason
+        # reported when both would block.
+        current_exposure = sum(self._open_positions.values())
+        exposure_cap = (
+            self._account_equity * self.cfg["max_open_debit_exposure_pct"]
+            if self._account_equity > 0 else None
+        )
+        if exposure_cap is not None:
             new_exposure = current_exposure + debit
             exposure_pct = new_exposure / self._account_equity
             if exposure_pct > self.cfg["max_open_debit_exposure_pct"]:
@@ -252,6 +238,42 @@ class RiskManager:
                 )
                 result.risk_level = "BLOCKED"
                 return result
+
+        # ─── Dynamic, Capital-Based Trade Cadence ──────────────────────────
+        # Instead of an arbitrary fixed trade count, how many more trades we
+        # can still take today/this week is derived from how much exposure
+        # headroom remains under max_open_debit_exposure_pct — so a good day
+        # with real capital available lets more opportune, fully-confirmed
+        # setups through, while thin headroom naturally throttles cadence.
+        # Absolute ceilings below remain as circuit breakers only (guard
+        # against a runaway signal loop even when capital is abundant).
+        trades_today = self._count_trades_today()
+        day_ceiling = self._dynamic_trade_ceiling(current_exposure, exposure_cap, debit, period="day")
+        if trades_today >= day_ceiling:
+            result.allowed = False
+            result.reason = f"DYNAMIC_DAILY_CAPACITY: {trades_today}/{day_ceiling}"
+            result.risk_level = "BLOCKED"
+            return result
+
+        trades_this_week = self._count_trades_this_week()
+        week_ceiling = self._dynamic_trade_ceiling(current_exposure, exposure_cap, debit, period="week")
+        if trades_this_week >= week_ceiling:
+            result.allowed = False
+            result.reason = f"DYNAMIC_WEEKLY_CAPACITY: {trades_this_week}/{week_ceiling}"
+            result.risk_level = "BLOCKED"
+            return result
+
+        symbol_cap = (
+            max_same_underlying_override
+            if max_same_underlying_override is not None
+            else self.cfg["max_same_underlying_trades_per_week"]
+        )
+        symbol_trades = self._symbol_trades_this_week.get(symbol, 0)
+        if symbol_trades >= symbol_cap:
+            result.allowed = False
+            result.reason = f"MAX_SAME_UNDERLYING: {symbol} has {symbol_trades} this week (cap={symbol_cap})"
+            result.risk_level = "BLOCKED"
+            return result
 
         # ─── Symbol Disabled ─────────────────────────────────────────────
         if symbol in self._disabled_symbols:
@@ -276,6 +298,38 @@ class RiskManager:
         if weekly_pct <= self.cfg["weekly_kill_loss_pct"]:
             self._weekly_killed = True
             self._log_event("WEEKLY_KILL_TRIGGERED", f"pnl_pct={weekly_pct:.4f}")
+
+    def _dynamic_trade_ceiling(
+        self,
+        current_exposure: float,
+        exposure_cap: Optional[float],
+        debit: float,
+        period: str,
+    ) -> int:
+        """
+        Capital-derived cap on total trades allowed this day/week: how many
+        trades of roughly this size still fit inside the account's exposure
+        headroom, bounded by an absolute circuit-breaker ceiling so cadence
+        can never run away (data glitch, feedback loop) even when capital is
+        abundant. A day gets half the headroom-based budget so one busy day
+        can't spend the whole week's allowance at once; the week gets all
+        of it. This replaces a flat trade count with one that responds to
+        how much capital is actually available right now.
+        """
+        circuit_breaker = self.cfg.get(
+            f"absolute_max_trades_per_{period}_ceiling",
+            self.cfg[f"max_trades_per_{period}"],
+        )
+
+        if exposure_cap is None or exposure_cap <= 0 or debit <= 0:
+            # Equity/debit not yet known — fall back to the configured soft
+            # baseline rather than either blocking or allowing everything.
+            return self.cfg[f"max_trades_per_{period}"]
+
+        headroom = max(0.0, exposure_cap - current_exposure)
+        period_budget = headroom if period == "week" else headroom * 0.5
+        affordable = int(period_budget / debit)
+        return max(1, min(affordable, circuit_breaker))
 
     def _count_trades_today(self) -> int:
         today = self._current_date or date.today()
