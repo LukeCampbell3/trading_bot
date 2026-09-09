@@ -7,10 +7,11 @@ validation because an Alpaca failure can look like a successful simulated fill.
 This manager fails closed whenever a broker client is supplied:
 - broker submission failures are never converted into synthetic fills;
 - paper accounts are reconciled against Alpaca just like live accounts;
-- stale broker orders are cancelled at the broker before being marked missed;
+- stale/replaced broker orders are cancelled at Alpaca before internal retirement;
+- closing credit fills are normalized to positive credit for internal P&L math;
 - multi-leg requests follow Alpaca's current MLEG contract: qty is the number of
-  spread units, each leg carries its own side/position intent, and the parent
-  request does not rely on a top-level side.
+  spread units, each leg carries side/position intent, and the parent request
+  does not rely on a top-level side.
 """
 
 from __future__ import annotations
@@ -105,7 +106,6 @@ class V14_3_MlegExecutionManager(MlegExecutionManager):
                 self._release_contracts(order)
                 self._log_order(order)
                 return False
-            # A fast paper fill can already be visible; otherwise leave SUBMITTED.
             self.check_order_status(order)
         elif self.paper_mode and self.allow_offline_simulation:
             self._simulate_fill(order)
@@ -134,6 +134,7 @@ class V14_3_MlegExecutionManager(MlegExecutionManager):
                 return False
             self.check_order_status(order)
         elif self.paper_mode and self.allow_offline_simulation:
+            # Base simulator stores a positive close credit, which is what the strategy expects.
             self._simulate_exit_fill(order)
         else:
             order.state = OrderState.CLOSE_FAILED
@@ -160,6 +161,32 @@ class V14_3_MlegExecutionManager(MlegExecutionManager):
             self.last_broker_error = str(exc)
             return False
 
+    def cancel_all_entries_for_symbol(self, symbol: str):
+        """Cancel broker-side pending entries before replacing them."""
+        for order in list(self._orders.values()):
+            if order.direction != "OPEN" or order.state not in (OrderState.SUBMITTED, OrderState.PARTIALLY_FILLED):
+                continue
+            if not any(symbol in leg.contract_symbol for leg in order.legs):
+                continue
+            if order.broker_order_id and self.trading_client is not None:
+                try:
+                    self.trading_client.cancel_order_by_id(order.broker_order_id)
+                except Exception as exc:
+                    self.last_broker_error = str(exc)
+                    order.cancel_reason = f"replace_cancel_failed:{str(exc)[:160]}"
+                    self._log_order(order)
+                    continue
+            if order.state == OrderState.PARTIALLY_FILLED:
+                order.cancel_reason = "replace_partial_fill_reconcile_required"
+                self.reconcile_positions()
+                self._log_order(order)
+                continue
+            order.state = OrderState.CANCELED
+            order.cancel_reason = "replaced_by_new_entry"
+            order.last_updated = datetime.utcnow()
+            self._release_contracts(order)
+            self._log_order(order)
+
     def cancel_stale_orders(self):
         """Cancel stale broker entries before declaring a missed fill."""
         now = datetime.utcnow()
@@ -173,7 +200,7 @@ class V14_3_MlegExecutionManager(MlegExecutionManager):
             if order.broker_order_id and self.trading_client is not None:
                 try:
                     self.trading_client.cancel_order_by_id(order.broker_order_id)
-                except Exception as exc:  # fail closed; do not pretend cancellation succeeded
+                except Exception as exc:
                     self.last_broker_error = str(exc)
                     order.cancel_reason = f"stale_cancel_failed: {str(exc)[:160]}"
                     order.last_updated = now
@@ -181,7 +208,6 @@ class V14_3_MlegExecutionManager(MlegExecutionManager):
                     continue
 
             if order.state == OrderState.PARTIALLY_FILLED:
-                # Partial fill means exposure can exist. Reconciliation is mandatory.
                 order.cancel_reason = "partial_fill_stale_reconcile_required"
                 order.last_updated = now
                 self.reconcile_positions()
@@ -193,6 +219,56 @@ class V14_3_MlegExecutionManager(MlegExecutionManager):
             order.last_updated = now
             self._release_contracts(order)
             self._log_order(order)
+
+    def check_order_status(self, order: MlegOrder) -> OrderState:
+        """Poll Alpaca and normalize closing credits to positive internal values."""
+        if not self.trading_client or not order.broker_order_id:
+            return order.state
+        try:
+            broker_order = self.trading_client.get_order_by_id(order.broker_order_id)
+            status_obj = getattr(broker_order, "status", "")
+            status = getattr(status_obj, "value", str(status_obj)).lower()
+            if status == "filled":
+                order.state = OrderState.FILLED if order.direction == "OPEN" else OrderState.CLOSED
+                order.fill_time = datetime.utcnow()
+                raw = getattr(broker_order, "filled_avg_price", None)
+                if raw not in (None, ""):
+                    fill = float(raw)
+                    if order.direction == "OPEN":
+                        order.actual_fill_price = abs(fill)
+                        order.fill_slippage_vs_mid = (
+                            (order.actual_fill_price - order.composite_mid) / order.composite_mid
+                            if order.composite_mid > 0 else 0.0
+                        )
+                    else:
+                        order.actual_exit_price = abs(fill)
+                        order.exit_slippage_vs_bid = (
+                            (order.composite_bid - order.actual_exit_price) / order.composite_bid
+                            if order.composite_bid > 0 else 0.0
+                        )
+                order.last_updated = datetime.utcnow()
+                self._log_fill(order)
+            elif status == "partially_filled":
+                order.state = OrderState.PARTIALLY_FILLED
+                order.last_updated = datetime.utcnow()
+            elif status in ("canceled", "cancelled"):
+                order.state = OrderState.CANCELED
+                order.last_updated = datetime.utcnow()
+                self._release_contracts(order)
+            elif status == "expired":
+                order.state = OrderState.EXPIRED
+                order.last_updated = datetime.utcnow()
+                self._release_contracts(order)
+            elif status == "rejected":
+                order.state = OrderState.REJECTED if order.direction == "OPEN" else OrderState.CLOSE_FAILED
+                order.cancel_reason = str(getattr(broker_order, "reject_reason", "broker_rejected"))
+                order.last_updated = datetime.utcnow()
+                if order.direction == "OPEN":
+                    self._release_contracts(order)
+            self.last_broker_error = ""
+        except Exception as exc:  # pragma: no cover - integration only
+            self.last_broker_error = str(exc)
+        return order.state
 
     def _submit_to_broker(self, order: MlegOrder) -> bool:
         """Build the current Alpaca MLEG limit request and submit it."""
