@@ -1,0 +1,36 @@
+name: V14.3 Options Integration CI
+
+on:
+  push:
+    branches: [v14-3-options-integration]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-v14-options:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements_alpaca.txt
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'alpaca-py>=0.43.5' pytest numpy pandas pytz scipy joblib python-dotenv
+      - name: Compile new option modules
+        run: |
+          python -m py_compile \
+            execution/v14_3_mleg_execution_manager.py \
+            strategy/v14_3_options_runner.py \
+            run_v14_3_options_paper.py \
+            test_alpaca_options_connection.py \
+            validate_v14_3_recent_options.py
+      - name: Run strategy regression suite
+        run: python -m pytest -q tests
