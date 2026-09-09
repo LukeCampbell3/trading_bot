@@ -34,3 +34,5 @@ jobs:
             validate_v14_3_recent_options.py
       - name: Run strategy regression suite
         run: python -m pytest -q tests
+
+# Focused branch-only CI: intentionally excludes TensorFlow model tests to minimize Actions usage.
