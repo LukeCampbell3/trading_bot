@@ -22,7 +22,7 @@ from typing import Dict, Optional
 
 import pytz
 
-from alpaca.data.enums import DataFeed
+from alpaca.data.enums import DataFeed, Sort
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -86,7 +86,7 @@ class AlpacaTradeDriftEstimator:
                 end=end,
                 limit=1,
                 feed=DataFeed.IEX,
-                sort="desc",
+                sort=Sort.DESC,
             )
             latest = self.client.get_stock_bars(minute_req).df
             if latest.empty:
@@ -152,7 +152,6 @@ def main() -> int:
         except Exception as exc:
             print(f"Alpaca drift estimator unavailable: {exc}; continuing without drift gating")
 
-    polls = 0
     failures = 0
     interval = max(15.0, args.poll_seconds)
     print(
@@ -161,7 +160,6 @@ def main() -> int:
     )
 
     while True:
-        polls += 1
         try:
             # Fetch once so we can compute a per-ticker residual-opportunity estimate
             # before passing genuinely new disclosures through the policy.
