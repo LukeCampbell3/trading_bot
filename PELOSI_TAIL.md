@@ -119,6 +119,8 @@ PELOSI_MAX_PENDING_HOURS=18
 
 ## Validation status
 
-The execution layer is structurally testable without brokerage credentials through a fake TradingClient. CI verifies automatic paper-order construction, fill ownership, restart idempotency, market-closed queueing, risk caps, strategy-only exits, shadow isolation, and the explicit live-mode lock.
+The automated execution layer has passed the credential-free broker simulation suite: 17 focused tests total across the Pelosi source/policy and execution modules. These verify automatic paper-order construction, fill ownership, restart idempotency, market-closed queueing, risk caps, strategy-only exits, shadow isolation, and the explicit live-mode lock.
 
-A real brokerage communication test still requires Alpaca account credentials in the runtime. Live profitability is not implied by execution correctness; disclosure-time residual-return validation should continue in parallel.
+The available ChatGPT Alpaca connection exposes market data but not brokerage order submission, and the repository currently has no Quiver/Alpaca secrets available to CI. Therefore no real Alpaca paper or live order was submitted during this implementation. Before switching `PELOSI_EXECUTION_MODE` to live, run the paper mode against the intended Alpaca account and verify the resulting order/fill ledger.
+
+Execution correctness does not imply strategy profitability. Disclosure-time residual-return validation should continue in parallel.
