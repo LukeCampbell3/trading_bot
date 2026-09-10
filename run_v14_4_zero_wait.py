@@ -14,6 +14,14 @@ from __future__ import annotations
 
 import argparse
 import time
+from datetime import timedelta
+from typing import Optional
+
+import pandas as pd
+
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed, Sort
 
 from alpaca_trader import AlpacaTrader
 from strategy.warm_start_v14_4 import ZeroWaitWarmStarter
@@ -38,6 +46,47 @@ class V14_4_ZeroWaitTrader(AlpacaTrader):
         )
         self._warm_checkpoint_cycles = 0
         self._last_warm_report = None
+
+    def _get_bars_rest(self, symbol: str, limit: int, recent: bool = False) -> Optional[pd.DataFrame]:
+        """Always request newest bars first, then restore chronological order.
+
+        The legacy bootstrap requests a seven-day range with a small limit but does
+        not set sort direction. That can return an old page of the range instead of
+        the newest context. Warm start must be anchored to the bar nearest startup.
+        """
+        now = self._get_server_utc_now().to_pydatetime()
+        start = now - timedelta(hours=8) if recent else now - timedelta(days=7)
+        req = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Minute,
+            start=start,
+            end=now,
+            limit=int(limit),
+            feed=DataFeed.IEX,
+            sort=Sort.DESC,
+        )
+        try:
+            bars = self._call_data_api(self.data_client.get_stock_bars, req)
+        except Exception as exc:
+            if "not found" in str(exc).lower() or "no data" in str(exc).lower():
+                return None
+            raise
+        df = bars.df
+        if df is None or df.empty:
+            return None
+        if isinstance(df.index, pd.MultiIndex):
+            try:
+                df = df.xs(symbol, level="symbol")
+            except Exception:
+                df = df.reset_index()
+                df = df[df["symbol"] == symbol].set_index("timestamp")
+        df = df.reset_index()
+        # Alpaca stock bar frames normally expose these exact fields.
+        expected = ["timestamp", "open", "high", "low", "close", "volume", "trade_count", "vwap"]
+        if len(df.columns) == len(expected):
+            df.columns = expected
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        return df.sort_values("timestamp").tail(int(limit))
 
     def bootstrap_buffers(self):
         """Replace live-time warm-up with restore -> delta backfill -> causal replay."""
