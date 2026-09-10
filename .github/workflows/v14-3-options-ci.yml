@@ -2,7 +2,7 @@ name: V14.3 Options Integration CI
 
 on:
   push:
-    branches: [v14-3-options-integration]
+    branches: [v14-3-options-integration, v14-4-zero-wait-warm-start]
   pull_request:
     branches: [main]
 
@@ -30,12 +30,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install 'alpaca-py>=0.43.5' pytest numpy pandas pytz scipy joblib python-dotenv
-      - name: Compile new option modules
+      - name: Compile strategy modules
         run: |
           python -m py_compile \
             execution/v14_3_mleg_execution_manager.py \
             strategy/v14_3_options_runner.py \
+            strategy/warm_start_v14_4.py \
             run_v14_3_options_paper.py \
+            run_v14_4_options_paper.py \
             test_alpaca_options_connection.py \
             validate_v14_3_recent_options.py
       - name: Run strategy regression suite
@@ -72,4 +74,4 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-# Focused branch-only CI: intentionally excludes TensorFlow model tests to minimize Actions usage.
+# Focused CI intentionally excludes TensorFlow model tests to minimize Actions usage.
