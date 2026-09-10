@@ -13,8 +13,10 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import time
 from datetime import timedelta
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -27,6 +29,27 @@ from alpaca_trader import AlpacaTrader
 from strategy.warm_start_v14_4 import ZeroWaitWarmStarter
 
 
+def _artifact_identity(*paths) -> str:
+    """Hash model/scaler bytes so stale calibration can never cross a model change."""
+    h = hashlib.sha256()
+    found = False
+    for value in paths:
+        if not value:
+            continue
+        path = Path(value)
+        if not path.exists() or not path.is_file():
+            continue
+        found = True
+        h.update(str(path).encode("utf-8"))
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+    return h.hexdigest()[:16] if found else "runtime-model"
+
+
 class V14_4_ZeroWaitTrader(AlpacaTrader):
     VERSION = "14.4-zero-wait"
 
@@ -37,7 +60,13 @@ class V14_4_ZeroWaitTrader(AlpacaTrader):
         warm_signal_count: int = 30,
         **kwargs,
     ):
+        model_path = kwargs.get("model_path")
+        scaler_path = kwargs.get("scaler_path")
+        artifact_id = _artifact_identity(model_path, scaler_path)
         super().__init__(*args, **kwargs)
+        # WarmStateStore fingerprints VERSION. Include actual model/scaler bytes so
+        # a replaced weights file invalidates prior calibration automatically.
+        self.VERSION = f"14.4-zero-wait:{artifact_id}"
         self.warm_starter = ZeroWaitWarmStarter(
             checkpoint_path=warm_state_path,
             required_signal_history=warm_signal_count,
@@ -46,6 +75,7 @@ class V14_4_ZeroWaitTrader(AlpacaTrader):
         )
         self._warm_checkpoint_cycles = 0
         self._last_warm_report = None
+        self._warm_ready_symbols = set()
 
     def _get_bars_rest(self, symbol: str, limit: int, recent: bool = False) -> Optional[pd.DataFrame]:
         """Always request newest bars first, then restore chronological order.
@@ -81,7 +111,6 @@ class V14_4_ZeroWaitTrader(AlpacaTrader):
                 df = df.reset_index()
                 df = df[df["symbol"] == symbol].set_index("timestamp")
         df = df.reset_index()
-        # Alpaca stock bar frames normally expose these exact fields.
         expected = ["timestamp", "open", "high", "low", "close", "volume", "trade_count", "vwap"]
         if len(df.columns) == len(expected):
             df.columns = expected
@@ -94,6 +123,7 @@ class V14_4_ZeroWaitTrader(AlpacaTrader):
         started = time.perf_counter()
         report = self.warm_starter.prepare(self)
         self._last_warm_report = report
+        self._warm_ready_symbols = {s.symbol for s in report.symbols.values() if s.ready}
         elapsed = time.perf_counter() - started
         not_ready = [s.symbol for s in report.symbols.values() if not s.ready]
         replayed = sum(s.replayed_signals for s in report.symbols.values())
@@ -106,11 +136,43 @@ class V14_4_ZeroWaitTrader(AlpacaTrader):
         if not_ready:
             print(f"  Not ready (real data insufficient, fail-closed): {not_ready}")
 
+    def _promote_newly_ready_symbols(self):
+        """If an IPO/short-history symbol matures intraday, rebuild calibration causally."""
+        minimum = self.warm_starter.required_model_bars(self)
+        newly_ready = []
+        for sym, state in self.sym_states.items():
+            if sym in self._warm_ready_symbols or len(state.buf) < minimum:
+                continue
+            # Any fallback signals accumulated before full model readiness are not
+            # admissible calibration evidence. Rebuild from real historical prefixes.
+            state.signal_history.clear()
+            state.last_signal = None
+            newly_ready.append(sym)
+        if newly_ready:
+            self.warm_starter.fast_forward_calibration(self)
+            for sym in newly_ready:
+                state = self.sym_states[sym]
+                if len(state.signal_history) >= self.warm_starter.required_signal_history:
+                    self._warm_ready_symbols.add(sym)
+                    print(f"  Warm-start promotion: {sym} became model/calibration ready")
+
     def generate_signals(self) -> list:
+        self._promote_newly_ready_symbols()
         # The parent now sees a populated signal_history on its first real-time call.
         signals = super().generate_signals()
+        minimum = self.warm_starter.required_model_bars(self)
+        # Fail closed for any symbol that lacks either trained-model context or the
+        # calibration distribution. This prevents the zero-wait layer from trading
+        # on fabricated/default warm values.
+        ready_now = {
+            sym for sym, state in self.sym_states.items()
+            if len(state.buf) >= minimum and
+               len(state.signal_history) >= self.warm_starter.required_signal_history
+        }
+        self._warm_ready_symbols |= ready_now
+        signals = [s for s in signals if getattr(s, "symbol", "") in self._warm_ready_symbols]
+
         self._warm_checkpoint_cycles += 1
-        # Persist frequently enough for restart continuity without writing each tick.
         if self._warm_checkpoint_cycles % 5 == 0:
             try:
                 self.warm_starter.store.save(self)
