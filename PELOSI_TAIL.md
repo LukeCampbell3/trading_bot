@@ -121,6 +121,14 @@ PELOSI_MAX_PENDING_HOURS=18
 
 The automated execution layer has passed the credential-free broker simulation suite: 17 focused tests total across the Pelosi source/policy and execution modules. These verify automatic paper-order construction, fill ownership, restart idempotency, market-closed queueing, risk caps, strategy-only exits, shadow isolation, and the explicit live-mode lock.
 
-The available ChatGPT Alpaca connection exposes market data but not brokerage order submission, and the repository currently has no Quiver/Alpaca secrets available to CI. Therefore no real Alpaca paper or live order was submitted during this implementation. Before switching `PELOSI_EXECUTION_MODE` to live, run the paper mode against the intended Alpaca account and verify the resulting order/fill ledger.
+The available ChatGPT Alpaca connection exposes market data but not brokerage order submission, and the repository currently has no Quiver/Alpaca secrets available to CI. Therefore no real Alpaca paper or live order was submitted during this implementation. Before switching `PELOSI_EXECUTION_MODE` to live, run paper mode against the intended Alpaca account and verify the resulting order/fill ledger.
+
+## Activation sequence
+
+1. Configure `QUIVER_API_KEY` and Alpaca paper credentials.
+2. Run `python run_pelosi_tail.py --execution-mode paper` continuously through at least one genuine new disclosure or controlled test feed and verify `execution_state.json` matches the Alpaca paper account.
+3. Keep `--replay-existing` off in automated trading so old disclosures cannot be replayed as new trades.
+4. Only after paper reconciliation is clean, switch to live account credentials, set `ALPACA_PAPER=false`, `PELOSI_EXECUTION_MODE=live`, and the independent `PELOSI_ALLOW_LIVE=true` interlock.
+5. Keep the service on a persistent host/process supervisor; this feature is a polling daemon, not a GitHub Actions trading loop.
 
 Execution correctness does not imply strategy profitability. Disclosure-time residual-return validation should continue in parallel.
