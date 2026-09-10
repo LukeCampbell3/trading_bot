@@ -44,10 +44,13 @@ jobs:
             run_v14_4_zero_wait.py \
             run_v14_4_options_paper.py \
             run_v14_5_options_paper.py \
+            validate_v14_5_reversal_stability.py \
             test_alpaca_options_connection.py \
             validate_v14_3_recent_options.py
       - name: Run strategy regression suite
         run: python -m pytest -q tests
+      - name: Run deterministic reversal-stability validation
+        run: python validate_v14_5_reversal_stability.py
       - name: Detect Alpaca repository credentials
         id: alpaca-creds
         shell: bash
