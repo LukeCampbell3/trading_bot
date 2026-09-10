@@ -4,7 +4,7 @@
 
 ## Timing rule
 
-The service never treats the disclosed `TransactionDate` as an observable trading signal. House Periodic Transaction Reports can be filed days or weeks after the underlying transaction. The bot records transaction date, report date, and first-seen timestamp separately. Backtests and execution availability must key to disclosure/first-seen time, never the original transaction date.
+The service never treats the disclosed `TransactionDate` as an observable trading signal. House Periodic Transaction Reports can be filed days or weeks after the underlying transaction. The bot records transaction date, report date, and first-seen timestamp separately. Backtests and execution availability key to disclosure/first-seen time, never the original transaction date.
 
 ## Automated execution
 
@@ -33,7 +33,7 @@ python run_pelosi_tail.py --execution-mode shadow
 # automatically place Alpaca paper orders
 PELOSI_EXECUTION_MODE=paper ALPACA_PAPER=true python run_pelosi_tail.py
 
-# automatically place real-money Alpaca orders
+# automatically place real-money Alpaca orders (deliberate opt-in)
 PELOSI_EXECUTION_MODE=live PELOSI_ALLOW_LIVE=true ALPACA_PAPER=false python run_pelosi_tail.py
 ```
 
@@ -52,5 +52,5 @@ The available ChatGPT Alpaca integration exposes market data but not brokerage o
 1. Configure `QUIVER_API_KEY` and Alpaca paper credentials.
 2. Run `python run_pelosi_tail.py --execution-mode paper` continuously and verify broker reconciliation.
 3. Keep `--replay-existing` off.
-4. After the paper execution ledger is verified, move to live credentials and deliberately enable all three live gates.
-5. Host the runner as a persistent daemon/process; GitHub Actions is validation CI, not the trading runtime.
+4. After paper reconciliation is clean, move to live credentials and deliberately enable all three live gates.
+5. Run the service on a persistent host/process supervisor; GitHub Actions is validation CI, not the trading runtime.
