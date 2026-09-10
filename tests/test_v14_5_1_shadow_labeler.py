@@ -84,9 +84,11 @@ def test_primary_shadow_labels_feed_independent_edge_memory(tmp_path):
         output_dir=str(tmp_path),
     )
     mem = EmpiricalOptionEdgeMemory(
-        min_samples=2, prior_strength=0, log_path=str(tmp_path / "edge.csv")
+        min_samples=3, prior_strength=0, log_path=str(tmp_path / "edge.csv")
     )
-    for i, (score, exit_credit) in enumerate(((.60, .90), (.80, 1.30))):
+    # Three observations are the minimum needed for a useful correlation test.
+    # Route score and executable spread return are intentionally separate inputs.
+    for i, (score, exit_credit) in enumerate(((.60, .90), (.70, 1.10), (.80, 1.30))):
         ts = t0 + timedelta(hours=i * 2)
         labels = labeler.label_candidate(
             _candidate(ts, watch_mid=1.0, score=score),
