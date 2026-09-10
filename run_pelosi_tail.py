@@ -40,12 +40,7 @@ from political_signals.pelosi_tail import (
 
 
 class AlpacaTradeDriftEstimator:
-    """Estimate underlying drift from the disclosed transaction date to now.
-
-    This is not Pelosi's exact fill price. Congressional reports do not publish exact
-    execution prices. We use the first available daily close on/after transaction date
-    and the newest one-minute close as a residual-opportunity proxy.
-    """
+    """Estimate underlying drift from the disclosed transaction date to now."""
 
     def __init__(self):
         AlpacaConfig.validate()
@@ -60,15 +55,14 @@ class AlpacaTradeDriftEstimator:
             end = datetime.now(self.eastern)
             if start >= end:
                 return None
-            daily_req = StockBarsRequest(
+            daily = self.client.get_stock_bars(StockBarsRequest(
                 symbol_or_symbols=disclosure.ticker,
                 timeframe=TimeFrame.Day,
                 start=start,
                 end=end,
                 limit=10,
                 feed=DataFeed.IEX,
-            )
-            daily = self.client.get_stock_bars(daily_req).df
+            )).df
             if daily.empty:
                 return None
             if hasattr(daily.index, "nlevels") and daily.index.nlevels > 1:
@@ -79,8 +73,7 @@ class AlpacaTradeDriftEstimator:
             anchor = float(daily["close"].iloc[0])
             if anchor <= 0:
                 return None
-
-            minute_req = StockBarsRequest(
+            latest = self.client.get_stock_bars(StockBarsRequest(
                 symbol_or_symbols=disclosure.ticker,
                 timeframe=TimeFrame.Minute,
                 start=max(start, end - timedelta(days=5)),
@@ -88,8 +81,7 @@ class AlpacaTradeDriftEstimator:
                 limit=1,
                 feed=DataFeed.IEX,
                 sort="desc",
-            )
-            latest = self.client.get_stock_bars(minute_req).df
+            )).df
             if latest.empty:
                 current = float(daily["close"].iloc[-1])
             else:
@@ -139,24 +131,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Track Nancy Pelosi disclosures and optionally tail them through Alpaca")
     parser.add_argument("--poll-seconds", type=float, default=float(os.getenv("PELOSI_POLL_SECONDS", "60")))
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--replay-existing", action="store_true", help="Process current Quiver window instead of baseline-seeding it")
-    parser.add_argument("--no-alpaca-drift", action="store_true", help="Skip transaction-date price-drift estimate")
+    parser.add_argument("--replay-existing", action="store_true")
+    parser.add_argument("--no-alpaca-drift", action="store_true")
     parser.add_argument("--max-notional-pct", type=float, default=float(os.getenv("PELOSI_MAX_NOTIONAL_PCT", "0.08")))
     parser.add_argument(
-        "--execution-mode",
-        choices=["shadow", "paper", "live"],
+        "--execution-mode", choices=["shadow", "paper", "live"],
         default=os.getenv("PELOSI_EXECUTION_MODE", "shadow").strip().lower(),
-        help="shadow=no orders; paper=Alpaca paper orders; live=real-money orders with explicit live gate",
     )
     args = parser.parse_args()
 
     client = QuiverCongressClient()
     policy = PelosiTailPolicy(base_max_notional_pct=args.max_notional_pct)
-    poller = PelosiTailPoller(
-        client,
-        policy,
-        seed_existing_on_first_run=not args.replay_existing,
-    )
+    poller = PelosiTailPoller(client, policy, seed_existing_on_first_run=not args.replay_existing)
     executor = PelosiAlpacaExecutor(
         mode=args.execution_mode,
         max_order_notional_pct=float(os.getenv("PELOSI_MAX_ORDER_PCT", "0.08")),
@@ -166,7 +152,6 @@ def main() -> int:
         max_pending_hours=float(os.getenv("PELOSI_MAX_PENDING_HOURS", "18")),
     )
     sink = SignalSink()
-
     print("Broker execution probe: " + json.dumps(executor.communication_probe(), sort_keys=True))
 
     drift_estimator = None
@@ -186,8 +171,6 @@ def main() -> int:
 
     while True:
         try:
-            # Reconcile broker fills every cycle and execute any market-closed signals
-            # that are still fresh once the next regular session opens.
             if args.execution_mode != "shadow":
                 executor.reconcile()
                 for result in executor.process_pending():
@@ -202,8 +185,6 @@ def main() -> int:
                         if drift is not None:
                             price_returns[d.ticker] = drift
 
-            # Avoid a second source request in poll_once while preserving its restart-
-            # safe fingerprint/dedup state machine.
             original = client.fetch_recent
             client.fetch_recent = lambda: disclosures
             try:
@@ -213,8 +194,7 @@ def main() -> int:
 
             for decision in decisions:
                 sink.emit(decision, args.execution_mode)
-                result = executor.process(decision)
-                sink.emit_execution(result)
+                sink.emit_execution(executor.process(decision))
 
             failures = 0
             if args.once:
