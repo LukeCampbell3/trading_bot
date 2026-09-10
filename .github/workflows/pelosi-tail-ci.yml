@@ -24,9 +24,13 @@ jobs:
         run: python -m pip install pytest requests pytz python-dotenv 'alpaca-py>=0.43.5'
       - name: Compile feature
         run: |
-          python -m py_compile political_signals/pelosi_tail.py run_pelosi_tail.py test_quiver_pelosi_connection.py
-      - name: Run Pelosi feature tests
-        run: python -m pytest -q tests/test_pelosi_tail.py
+          python -m py_compile \
+            political_signals/pelosi_tail.py \
+            political_signals/pelosi_execution.py \
+            run_pelosi_tail.py \
+            test_quiver_pelosi_connection.py
+      - name: Run Pelosi feature and execution tests
+        run: python -m pytest -q tests/test_pelosi_tail.py tests/test_pelosi_execution.py
       - name: Detect Quiver credential
         id: quiver
         shell: bash
