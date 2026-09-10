@@ -1,61 +1,104 @@
 # Pelosi Disclosure Tail
 
-`feature/pelosi-tail` adds a disclosure-driven stock signal service that tracks Nancy Pelosi transactions as soon as they appear in Quiver's live congressional trading feed.
+`feature/pelosi-tail` tracks Nancy Pelosi transactions as soon as they appear in Quiver's live congressional-trading feed and can automatically translate eligible public disclosures into Alpaca stock orders.
 
-## Important timing rule
+## Timing rule
 
-The service never treats the disclosed `TransactionDate` as an observable trading signal. House Periodic Transaction Reports can be filed days or weeks after the underlying transaction. The bot records:
-
-- transaction date — when the disclosed trade occurred;
-- report date — filing/public-disclosure date supplied by the data source;
-- first-seen timestamp — when this process first observed the disclosure.
-
-Backtests and production monitoring must key signal availability to disclosure/first-seen time, not transaction time.
+The service never treats the disclosed `TransactionDate` as an observable trading signal. House Periodic Transaction Reports can be filed days or weeks after the underlying transaction. The bot records transaction date, report date, and first-seen timestamp separately. Backtests and execution availability must key to disclosure/first-seen time, never the original transaction date.
 
 ## Source
 
-Primary source:
+Primary ingestion source:
 
 `https://api.quiverquant.com/beta/live/congresstrading`
 
-Authentication is `Authorization: Bearer $QUIVER_API_KEY`.
+Authentication is `Authorization: Bearer $QUIVER_API_KEY`. Quiver is the fast ingestion source; House Clerk PTR filings remain the authoritative disclosure source for verification.
 
-Quiver is an ingestion source, not the legal origin of the disclosure. House Clerk Periodic Transaction Reports remain the authoritative source for later verification.
+## Signal policy
 
-## Behavior
+The poller defaults to 60 seconds and baseline-seeds the current Quiver window on first launch so historical disclosures are not mistaken for new signals. Bullish stock purchases and clearly identified purchased calls can create `BUY` decisions. Sales and clearly bearish option disclosures create `EXIT_ONLY` decisions. Ambiguous options remain `WATCH`.
 
-The service polls every 60 seconds by default. A first run baseline-seeds the current live API window and does not emit trades from old disclosures. After that, only unseen Pelosi transactions generate decisions.
+The tail score discounts disclosure lag, smaller reported ranges, and less-certain instruments. Alpaca market data can also estimate the move since the disclosed transaction date; large run-ups are not chased and large adverse moves are not averaged down.
 
-Bullish stock purchases and clearly identified purchased calls can create `BUY` signals. Sales and clearly bearish option disclosures create `EXIT_ONLY` signals; this feature never opens a naked short. Ambiguous option disclosures are `WATCH` only.
+## Automated execution
 
-The tail score discounts old disclosures, smaller reported ranges, and option ambiguity. If Alpaca credentials are available, the runner also estimates how far the underlying has already moved since the disclosed transaction date. Large run-ups are not chased and large adverse moves are treated as a changed thesis rather than an averaging-down opportunity.
+`political_signals/pelosi_execution.py` is the broker-write layer. It is independent from the parser and signal policy so detection, decision-making, and execution are auditable separately.
 
-Default maximum suggested notional is 8% of account equity, multiplied by the tail score. This is a signal budget, not an automatic live order.
+Execution modes:
+
+- `shadow`: no broker writes.
+- `paper`: eligible decisions automatically submit actual orders to the Alpaca paper account.
+- `live`: eligible decisions automatically submit real-money orders to the Alpaca live brokerage account.
+
+Live execution has a deliberate multi-gate interlock. All three settings must agree:
+
+```text
+PELOSI_EXECUTION_MODE=live
+PELOSI_ALLOW_LIVE=true
+ALPACA_PAPER=false
+```
+
+The executor will refuse to start live if the second explicit gate is absent or the account configuration still points to paper.
+
+### Order behavior
+
+Bullish `BUY` decisions submit regular-hours Alpaca market orders using notional dollars, which permits fractional stock sizing for small accounts. Bearish `EXIT_ONLY` decisions never create a naked short: they sell only the quantity recorded in the strategy-owned Pelosi ledger.
+
+The strategy is restart-safe and idempotent. A disclosure fingerprint can submit at most one entry action even after a process restart. Broker fills are reconciled by Alpaca order id and strategy-owned filled quantity is persisted separately from any unrelated shares in the brokerage account.
+
+If a new disclosure is detected outside regular market hours, it is queued instead of using extended-hours trading. The default queue lifetime is 18 hours; stale pending signals expire rather than being executed indefinitely later.
+
+### Execution risk caps
+
+Defaults are intentionally bounded independently of the signal score:
+
+```text
+single disclosure/order cap: 8% equity
+single Pelosi-tail symbol cap: 10% equity
+aggregate Pelosi-tail cap: 20% equity
+minimum order: $5
+```
+
+Actual buy notional is the minimum of the signal's suggested allocation, these portfolio caps, and available buying power.
 
 ## Run
 
-```bash
-python run_pelosi_tail.py
-```
-
-One source check:
+Signal-only mode:
 
 ```bash
-python run_pelosi_tail.py --once
+python run_pelosi_tail.py --execution-mode shadow
 ```
 
-Replay the currently returned Quiver window instead of baseline-seeding it:
+Automatic paper orders:
 
 ```bash
-python run_pelosi_tail.py --once --replay-existing
+PELOSI_EXECUTION_MODE=paper ALPACA_PAPER=true python run_pelosi_tail.py
 ```
 
-The runner is deliberately `SHADOW_ONLY`. It writes:
+Automatic live orders after deliberate live-account configuration:
 
-- `HFT/logs/pelosi_tail/state.json`
-- `HFT/logs/pelosi_tail/disclosures.jsonl`
-- `HFT/logs/pelosi_tail/latest_signal.json`
-- `HFT/logs/pelosi_tail/signals.jsonl`
+```bash
+PELOSI_EXECUTION_MODE=live PELOSI_ALLOW_LIVE=true ALPACA_PAPER=false python run_pelosi_tail.py
+```
+
+One source/execution-cycle check:
+
+```bash
+python run_pelosi_tail.py --once --execution-mode shadow
+```
+
+The first run baseline-seeds existing disclosures. `--replay-existing` exists for testing/research; do not use it casually with paper/live execution because it intentionally treats the current returned window as processable.
+
+## Persistent evidence
+
+The service writes under `HFT/logs/pelosi_tail/`:
+
+- `state.json` — disclosure deduplication state
+- `disclosures.jsonl` — observed public filings
+- `latest_signal.json` / `signals.jsonl` — policy decisions
+- `execution_state.json` — broker order and strategy-owned position ledger
+- `execution_audit.jsonl` — execution state changes
+- `execution_results.jsonl` — runner-level broker decisions/results
 
 ## Environment
 
@@ -64,10 +107,18 @@ QUIVER_API_KEY=...
 QUIVER_CONGRESS_URL=https://api.quiverquant.com/beta/live/congresstrading
 PELOSI_POLL_SECONDS=60
 PELOSI_MAX_NOTIONAL_PCT=0.08
+
+PELOSI_EXECUTION_MODE=shadow
+PELOSI_ALLOW_LIVE=false
+PELOSI_MAX_ORDER_PCT=0.08
+PELOSI_MAX_SYMBOL_PCT=0.10
+PELOSI_MAX_TOTAL_PCT=0.20
+PELOSI_MIN_ORDER_NOTIONAL=5
+PELOSI_MAX_PENDING_HOURS=18
 ```
 
-Alpaca credentials are optional for the disclosure tracker itself and are used only to estimate residual price opportunity in the current feature branch.
+## Validation status
 
-## Promotion path
+The execution layer is structurally testable without brokerage credentials through a fake TradingClient. CI verifies automatic paper-order construction, fill ownership, restart idempotency, market-closed queueing, risk caps, strategy-only exits, shadow isolation, and the explicit live-mode lock.
 
-Do not wire this directly to live execution until disclosure-time backtests have measured win rate, profit factor, drawdown, signal lag, and residual-return behavior. The intended next integration is as an external-prior input to the existing multi-symbol stock trader, where Pelosi signals can promote/rank an existing technical opportunity rather than bypass portfolio risk controls.
+A real brokerage communication test still requires Alpaca account credentials in the runtime. Live profitability is not implied by execution correctness; disclosure-time residual-return validation should continue in parallel.
