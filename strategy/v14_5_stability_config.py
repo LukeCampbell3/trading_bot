@@ -1,12 +1,12 @@
 """V14.5 stable options policy.
 
 V14.5 keeps the V14.3 high-vol core/runner economics and adds a directional
-hysteresis layer plus option-native contract quality metrics.  The purpose is
-not to make every short-lived CALL/PUT score change tradable.  A side must earn
+hysteresis layer plus option-native contract quality metrics. The purpose is
+not to make every short-lived CALL/PUT score change tradable. A side must earn
 and retain directional permission, while an actual reversal must be stronger
 and more persistent than an initial entry.
 
-Status: PAPER/REPLAY VALIDATION CANDIDATE.  No live-trading permission is changed.
+Status: PAPER/REPLAY VALIDATION CANDIDATE. No live-trading permission is changed.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ V14_5_STABLE_OPTIONS.update({
     "profile_scope": "HIGH_VOL_LIQUID_OPTIONS_WITH_REVERSAL_HYSTERESIS",
     "live_trading_enabled": False,
 
-    # Direction admission.  Initial entries need brief consensus, not a 20-30m
-    # warm-up.  Existing bias receives hysteresis: the opposite side must be
+    # Direction admission. Initial entries need brief consensus, not a 20-30m
+    # warm-up. Existing bias receives hysteresis: the opposite side must be
     # materially stronger for several consecutive observations before it can flip.
     "direction_consensus_window": 4,
     "direction_consensus_required": 2,
@@ -39,7 +39,13 @@ V14_5_STABLE_OPTIONS.update({
     "block_opposite_while_pending": True,
     "cancel_opposite_watches_on_bias_lock": True,
 
-    # Option-native quality.  These augment, rather than replace, V14.3's
+    # Exit hysteresis. Hard risk exits remain immediate. Only continuation-decay
+    # exits require structure to remain broken for consecutive observations, with
+    # a small ATR buffer around VWAP so one noisy cross cannot churn the spread.
+    "exit_reversal_confirm_bars": 2,
+    "exit_vwap_hysteresis_atr": 0.05,
+
+    # Option-native quality. These augment, rather than replace, V14.3's
     # composite-spread, mid-inflation, reward/risk and move-consumed checks.
     "option_delta_target_abs": 0.55,
     "option_long_delta_min_abs": 0.40,
@@ -50,7 +56,7 @@ V14_5_STABLE_OPTIONS.update({
     "option_min_native_quality_score": 0.55,
     "option_missing_greeks_size_multiplier": 0.65,
 
-    # Stability-aware sizing.  A recently changed/weakly-established bias can
+    # Stability-aware sizing. A recently changed/weakly-established bias can
     # participate, but cannot receive the same debit allocation as a mature side.
     "new_bias_size_multiplier": 0.75,
     "recent_reversal_size_multiplier": 0.50,
