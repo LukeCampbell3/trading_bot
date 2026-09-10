@@ -37,6 +37,7 @@ jobs:
             strategy/v14_3_options_runner.py \
             strategy/warm_start_v14_4.py \
             run_v14_3_options_paper.py \
+            run_v14_4_zero_wait.py \
             run_v14_4_options_paper.py \
             test_alpaca_options_connection.py \
             validate_v14_3_recent_options.py
