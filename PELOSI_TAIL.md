@@ -81,12 +81,6 @@ Automatic live orders after deliberate live-account configuration:
 PELOSI_EXECUTION_MODE=live PELOSI_ALLOW_LIVE=true ALPACA_PAPER=false python run_pelosi_tail.py
 ```
 
-One source/execution-cycle check:
-
-```bash
-python run_pelosi_tail.py --once --execution-mode shadow
-```
-
 The first run baseline-seeds existing disclosures. `--replay-existing` exists for testing/research; do not use it casually with paper/live execution because it intentionally treats the current returned window as processable.
 
 ## Persistent evidence
@@ -100,35 +94,18 @@ The service writes under `HFT/logs/pelosi_tail/`:
 - `execution_audit.jsonl` — execution state changes
 - `execution_results.jsonl` — runner-level broker decisions/results
 
-## Environment
-
-```text
-QUIVER_API_KEY=...
-QUIVER_CONGRESS_URL=https://api.quiverquant.com/beta/live/congresstrading
-PELOSI_POLL_SECONDS=60
-PELOSI_MAX_NOTIONAL_PCT=0.08
-
-PELOSI_EXECUTION_MODE=shadow
-PELOSI_ALLOW_LIVE=false
-PELOSI_MAX_ORDER_PCT=0.08
-PELOSI_MAX_SYMBOL_PCT=0.10
-PELOSI_MAX_TOTAL_PCT=0.20
-PELOSI_MIN_ORDER_NOTIONAL=5
-PELOSI_MAX_PENDING_HOURS=18
-```
-
 ## Validation status
 
-The automated execution layer has passed the credential-free broker simulation suite: 17 focused tests total across the Pelosi source/policy and execution modules. These verify automatic paper-order construction, fill ownership, restart idempotency, market-closed queueing, risk caps, strategy-only exits, shadow isolation, and the explicit live-mode lock.
+The automated execution layer has passed 17 focused tests across source/policy and execution. They verify automatic paper-order construction, fill ownership, restart idempotency, market-closed queueing, risk caps, strategy-only exits, shadow isolation, and the explicit live-mode lock.
 
-The available ChatGPT Alpaca connection exposes market data but not brokerage order submission, and the repository currently has no Quiver/Alpaca secrets available to CI. Therefore no real Alpaca paper or live order was submitted during this implementation. Before switching `PELOSI_EXECUTION_MODE` to live, run paper mode against the intended Alpaca account and verify the resulting order/fill ledger.
+The available ChatGPT Alpaca connection exposes market data but not brokerage order submission, and repository CI does not currently have the required Quiver/Alpaca credentials. No real Alpaca paper or live order was submitted during this implementation. Before switching to live, run paper mode against the intended account and verify `execution_state.json` matches the Alpaca paper account.
 
 ## Activation sequence
 
 1. Configure `QUIVER_API_KEY` and Alpaca paper credentials.
-2. Run `python run_pelosi_tail.py --execution-mode paper` continuously through at least one genuine new disclosure or controlled test feed and verify `execution_state.json` matches the Alpaca paper account.
-3. Keep `--replay-existing` off in automated trading so old disclosures cannot be replayed as new trades.
-4. Only after paper reconciliation is clean, switch to live account credentials, set `ALPACA_PAPER=false`, `PELOSI_EXECUTION_MODE=live`, and the independent `PELOSI_ALLOW_LIVE=true` interlock.
-5. Keep the service on a persistent host/process supervisor; this feature is a polling daemon, not a GitHub Actions trading loop.
+2. Run `python run_pelosi_tail.py --execution-mode paper` continuously and verify order/fill reconciliation against Alpaca paper.
+3. Keep `--replay-existing` off so old disclosures cannot be replayed as new trades.
+4. After paper reconciliation is clean, switch to live credentials and explicitly set all three live gates.
+5. Run the service on a persistent host/process supervisor; this is a polling daemon, not a GitHub Actions trading loop.
 
 Execution correctness does not imply strategy profitability. Disclosure-time residual-return validation should continue in parallel.
