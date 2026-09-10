@@ -1,8 +1,8 @@
-name: V14.3 Options Integration CI
+name: V14 Options Integration CI
 
 on:
   push:
-    branches: [v14-3-options-integration, v14-4-zero-wait-warm-start]
+    branches: [v14-3-options-integration, v14-4-zero-wait-warm-start, v14-5-stable-options-reversal-control]
   pull_request:
     branches: [main]
 
@@ -35,10 +35,15 @@ jobs:
           python -m py_compile \
             execution/v14_3_mleg_execution_manager.py \
             strategy/v14_3_options_runner.py \
+            strategy/v14_5_stability_config.py \
+            strategy/options_reversal_guard.py \
+            strategy/v14_5_options_runner.py \
+            strategy/v14_5_stable_options.py \
             strategy/warm_start_v14_4.py \
             run_v14_3_options_paper.py \
             run_v14_4_zero_wait.py \
             run_v14_4_options_paper.py \
+            run_v14_5_options_paper.py \
             test_alpaca_options_connection.py \
             validate_v14_3_recent_options.py
       - name: Run strategy regression suite
@@ -70,7 +75,7 @@ jobs:
         if: always() && steps.alpaca-creds.outputs.available == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: v14-3-option-validation
+          name: v14-option-validation
           path: HFT/logs/v14_3_options/validation/
           if-no-files-found: ignore
           retention-days: 7
