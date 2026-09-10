@@ -2,7 +2,7 @@ name: V14 Options Integration CI
 
 on:
   push:
-    branches: [v14-3-options-integration, v14-4-zero-wait-warm-start, v14-5-stable-options-reversal-control]
+    branches: [v14-3-options-integration, v14-4-zero-wait-warm-start, v14-5-stable-options-reversal-control, v14-5-1-validation-hardening]
   pull_request:
     branches: [main]
 
@@ -34,16 +34,24 @@ jobs:
         run: |
           python -m py_compile \
             execution/v14_3_mleg_execution_manager.py \
+            execution/v14_5_1_mleg_execution_manager.py \
             strategy/v14_3_options_runner.py \
             strategy/v14_5_stability_config.py \
             strategy/options_reversal_guard.py \
             strategy/v14_5_options_runner.py \
             strategy/v14_5_stable_options.py \
+            strategy/v14_5_1_config.py \
+            strategy/v14_5_1_features.py \
+            strategy/empirical_option_edge.py \
+            strategy/v14_5_1_vertical_selector.py \
+            strategy/v14_5_1_hardened_options.py \
             strategy/warm_start_v14_4.py \
+            replay/v14_5_1_shadow_labeler.py \
             run_v14_3_options_paper.py \
             run_v14_4_zero_wait.py \
             run_v14_4_options_paper.py \
             run_v14_5_options_paper.py \
+            run_v14_5_1_options_paper.py \
             validate_v14_5_reversal_stability.py \
             test_alpaca_options_connection.py \
             validate_v14_3_recent_options.py
@@ -68,6 +76,12 @@ jobs:
       - name: Read-only Alpaca options communication - TSLA
         if: steps.alpaca-creds.outputs.available == 'true'
         run: python test_alpaca_options_connection.py --symbol TSLA
+      - name: V14.5.1 communication + ranked selector - COIN
+        if: steps.alpaca-creds.outputs.available == 'true'
+        run: python run_v14_5_1_options_paper.py --symbol COIN --communication-only
+      - name: V14.5.1 communication + ranked selector - TSLA
+        if: steps.alpaca-creds.outputs.available == 'true'
+        run: python run_v14_5_1_options_paper.py --symbol TSLA --communication-only
       - name: Recent real-option-bar validation - COIN
         if: steps.alpaca-creds.outputs.available == 'true'
         run: python validate_v14_3_recent_options.py --symbol COIN --days 7 --starting-equity 1000 --entry-slippage 0.025 --exit-haircut 0.025
@@ -79,7 +93,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: v14-option-validation
-          path: HFT/logs/v14_3_options/validation/
+          path: HFT/logs/
           if-no-files-found: ignore
           retention-days: 7
 
