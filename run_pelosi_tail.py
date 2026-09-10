@@ -1,12 +1,13 @@
-"""Run the Pelosi disclosure tail service.
+"""Run the Pelosi disclosure tail service with optional Alpaca execution.
 
-Default mode is SHADOW_ONLY: detect new Nancy Pelosi disclosures, score the
-remaining opportunity, and emit an auditable signal.  No broker order is sent.
+The source clock is public disclosure time, never the original transaction date.
+Modes:
+- shadow: detect/score/log only
+- paper: automatically place Alpaca paper stock orders
+- live: automatically place real-money Alpaca stock orders after explicit live gates
 
-The service is designed to stay alongside the stock trader as an alternative-data
-signal producer.  It polls Quiver's live Congress feed and measures the public
-filing lag explicitly so backtests cannot accidentally use the original trade date
-as if it were observable in real time.
+Regular-session execution only. Signals detected while the market is closed are queued
+for the next regular session and expire rather than becoming indefinitely stale.
 """
 
 from __future__ import annotations
@@ -22,12 +23,13 @@ from typing import Dict, Optional
 
 import pytz
 
-from alpaca.data.enums import DataFeed, Sort
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from alpaca_config import AlpacaConfig
+from political_signals.pelosi_execution import PelosiAlpacaExecutor
 from political_signals.pelosi_tail import (
     PelosiDisclosure,
     PelosiTailDecision,
@@ -40,10 +42,9 @@ from political_signals.pelosi_tail import (
 class AlpacaTradeDriftEstimator:
     """Estimate underlying drift from the disclosed transaction date to now.
 
-    This is not an estimate of Pelosi's exact fill price.  Congressional reports do
-    not publish exact execution prices.  We use the first available daily close on
-    or after the disclosed transaction date and the newest one-minute close as a
-    conservative residual-opportunity proxy.
+    This is not Pelosi's exact fill price. Congressional reports do not publish exact
+    execution prices. We use the first available daily close on/after transaction date
+    and the newest one-minute close as a residual-opportunity proxy.
     """
 
     def __init__(self):
@@ -86,7 +87,7 @@ class AlpacaTradeDriftEstimator:
                 end=end,
                 limit=1,
                 feed=DataFeed.IEX,
-                sort=Sort.DESC,
+                sort="desc",
             )
             latest = self.client.get_stock_bars(minute_req).df
             if latest.empty:
@@ -111,11 +112,12 @@ class SignalSink:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.latest_path = self.output_dir / "latest_signal.json"
         self.history_path = self.output_dir / "signals.jsonl"
+        self.execution_path = self.output_dir / "execution_results.jsonl"
 
-    def emit(self, decision: PelosiTailDecision) -> None:
+    def emit(self, decision: PelosiTailDecision, mode: str) -> None:
         payload = {
-            "strategy": "PELOSI_DISCLOSURE_TAIL_V1",
-            "mode": "SHADOW_ONLY",
+            "strategy": "PELOSI_DISCLOSURE_TAIL_V2",
+            "mode": mode.upper(),
             "observed_at": datetime.now(timezone.utc).isoformat(),
             **decision.__dict__,
         }
@@ -126,14 +128,26 @@ class SignalSink:
             f.write(json.dumps(payload, sort_keys=True) + "\n")
         print(json.dumps(payload, sort_keys=True))
 
+    def emit_execution(self, result) -> None:
+        payload = result.__dict__ if hasattr(result, "__dict__") else dict(result)
+        with self.execution_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, sort_keys=True) + "\n")
+        print("EXECUTION " + json.dumps(payload, sort_keys=True))
+
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Track and tail Nancy Pelosi public stock disclosures")
+    parser = argparse.ArgumentParser(description="Track Nancy Pelosi disclosures and optionally tail them through Alpaca")
     parser.add_argument("--poll-seconds", type=float, default=float(os.getenv("PELOSI_POLL_SECONDS", "60")))
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--replay-existing", action="store_true", help="Process current Quiver window instead of baseline-seeding it")
     parser.add_argument("--no-alpaca-drift", action="store_true", help="Skip transaction-date price-drift estimate")
     parser.add_argument("--max-notional-pct", type=float, default=float(os.getenv("PELOSI_MAX_NOTIONAL_PCT", "0.08")))
+    parser.add_argument(
+        "--execution-mode",
+        choices=["shadow", "paper", "live"],
+        default=os.getenv("PELOSI_EXECUTION_MODE", "shadow").strip().lower(),
+        help="shadow=no orders; paper=Alpaca paper orders; live=real-money orders with explicit live gate",
+    )
     args = parser.parse_args()
 
     client = QuiverCongressClient()
@@ -143,7 +157,17 @@ def main() -> int:
         policy,
         seed_existing_on_first_run=not args.replay_existing,
     )
+    executor = PelosiAlpacaExecutor(
+        mode=args.execution_mode,
+        max_order_notional_pct=float(os.getenv("PELOSI_MAX_ORDER_PCT", "0.08")),
+        max_symbol_equity_pct=float(os.getenv("PELOSI_MAX_SYMBOL_PCT", "0.10")),
+        max_strategy_equity_pct=float(os.getenv("PELOSI_MAX_TOTAL_PCT", "0.20")),
+        min_order_notional=float(os.getenv("PELOSI_MIN_ORDER_NOTIONAL", "5")),
+        max_pending_hours=float(os.getenv("PELOSI_MAX_PENDING_HOURS", "18")),
+    )
     sink = SignalSink()
+
+    print("Broker execution probe: " + json.dumps(executor.communication_probe(), sort_keys=True))
 
     drift_estimator = None
     if not args.no_alpaca_drift:
@@ -155,14 +179,20 @@ def main() -> int:
     failures = 0
     interval = max(15.0, args.poll_seconds)
     print(
-        "PELOSI_DISCLOSURE_TAIL_V1 | SHADOW_ONLY | "
-        f"poll={interval:.0f}s | first-run-baseline={not args.replay_existing}"
+        "PELOSI_DISCLOSURE_TAIL_V2 | "
+        f"mode={args.execution_mode.upper()} | poll={interval:.0f}s | "
+        f"first-run-baseline={not args.replay_existing} | regular-hours-only=true"
     )
 
     while True:
         try:
-            # Fetch once so we can compute a per-ticker residual-opportunity estimate
-            # before passing genuinely new disclosures through the policy.
+            # Reconcile broker fills every cycle and execute any market-closed signals
+            # that are still fresh once the next regular session opens.
+            if args.execution_mode != "shadow":
+                executor.reconcile()
+                for result in executor.process_pending():
+                    sink.emit_execution(result)
+
             disclosures = client.fetch_recent()
             price_returns: Dict[str, float] = {}
             if drift_estimator:
@@ -172,7 +202,8 @@ def main() -> int:
                         if drift is not None:
                             price_returns[d.ticker] = drift
 
-            # Avoid a second HTTP request by temporarily serving this fetched window.
+            # Avoid a second source request in poll_once while preserving its restart-
+            # safe fingerprint/dedup state machine.
             original = client.fetch_recent
             client.fetch_recent = lambda: disclosures
             try:
@@ -181,7 +212,10 @@ def main() -> int:
                 client.fetch_recent = original
 
             for decision in decisions:
-                sink.emit(decision)
+                sink.emit(decision, args.execution_mode)
+                result = executor.process(decision)
+                sink.emit_execution(result)
+
             failures = 0
             if args.once:
                 return 0
