@@ -1,0 +1,42 @@
+name: Pelosi Tail CI
+
+on:
+  push:
+    branches: [feature/pelosi-tail]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-pelosi-tail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      QUIVER_API_KEY: ${{ secrets.QUIVER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: python -m pip install pytest requests pytz python-dotenv 'alpaca-py>=0.43.5'
+      - name: Compile feature
+        run: |
+          python -m py_compile political_signals/pelosi_tail.py run_pelosi_tail.py test_quiver_pelosi_connection.py
+      - name: Run Pelosi feature tests
+        run: python -m pytest -q tests/test_pelosi_tail.py
+      - name: Detect Quiver credential
+        id: quiver
+        shell: bash
+        run: |
+          if [[ -n "$QUIVER_API_KEY" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "QUIVER_API_KEY is not configured; read-only source probe skipped."
+          fi
+      - name: Read-only Quiver Pelosi probe
+        if: steps.quiver.outputs.available == 'true'
+        run: python test_quiver_pelosi_connection.py
