@@ -114,7 +114,6 @@ def main() -> int:
 
         if args.communication_only:
             # Option-contract/quote probe can run without feature warm-up.
-            snap = stock.get_stock_snapshot  # marker only; historical client may not expose snapshots
             df = _warm_bars_frame(stock, args.symbol)
             if df.empty:
                 print("Stock data probe: FAILED")
