@@ -1,0 +1,215 @@
+"""Run the Pelosi disclosure tail service with optional Alpaca execution.
+
+The source clock is public disclosure time, never the original transaction date.
+Modes:
+- shadow: detect/score/log only
+- paper: automatically place Alpaca paper stock orders
+- live: automatically place real-money Alpaca stock orders after explicit live gates
+
+Regular-session execution only. Signals detected while the market is closed are queued
+for the next regular session and expire rather than becoming indefinitely stale.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from datetime import datetime, time as dt_time, timedelta, timezone
+from pathlib import Path
+from typing import Dict, Optional
+
+import pytz
+
+from alpaca.data.enums import DataFeed
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+
+from alpaca_config import AlpacaConfig
+from political_signals.pelosi_execution import PelosiAlpacaExecutor
+from political_signals.pelosi_tail import (
+    PelosiDisclosure,
+    PelosiTailDecision,
+    PelosiTailPolicy,
+    PelosiTailPoller,
+    QuiverCongressClient,
+)
+
+
+class AlpacaTradeDriftEstimator:
+    """Estimate underlying drift from the disclosed transaction date to now."""
+
+    def __init__(self):
+        AlpacaConfig.validate()
+        self.client = StockHistoricalDataClient(AlpacaConfig.API_KEY, AlpacaConfig.API_SECRET)
+        self.eastern = pytz.timezone("America/New_York")
+
+    def estimate(self, disclosure: PelosiDisclosure) -> Optional[float]:
+        if not disclosure.transaction_date or not disclosure.ticker:
+            return None
+        try:
+            start = self.eastern.localize(datetime.combine(disclosure.transaction_date, dt_time(4, 0)))
+            end = datetime.now(self.eastern)
+            if start >= end:
+                return None
+            daily = self.client.get_stock_bars(StockBarsRequest(
+                symbol_or_symbols=disclosure.ticker,
+                timeframe=TimeFrame.Day,
+                start=start,
+                end=end,
+                limit=10,
+                feed=DataFeed.IEX,
+            )).df
+            if daily.empty:
+                return None
+            if hasattr(daily.index, "nlevels") and daily.index.nlevels > 1:
+                try:
+                    daily = daily.xs(disclosure.ticker)
+                except Exception:
+                    pass
+            anchor = float(daily["close"].iloc[0])
+            if anchor <= 0:
+                return None
+            latest = self.client.get_stock_bars(StockBarsRequest(
+                symbol_or_symbols=disclosure.ticker,
+                timeframe=TimeFrame.Minute,
+                start=max(start, end - timedelta(days=5)),
+                end=end,
+                limit=1,
+                feed=DataFeed.IEX,
+                sort="desc",
+            )).df
+            if latest.empty:
+                current = float(daily["close"].iloc[-1])
+            else:
+                if hasattr(latest.index, "nlevels") and latest.index.nlevels > 1:
+                    try:
+                        latest = latest.xs(disclosure.ticker)
+                    except Exception:
+                        pass
+                current = float(latest["close"].iloc[0])
+            if current <= 0:
+                return None
+            return current / anchor - 1.0
+        except Exception:
+            return None
+
+
+class SignalSink:
+    def __init__(self, output_dir: str = "HFT/logs/pelosi_tail"):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.latest_path = self.output_dir / "latest_signal.json"
+        self.history_path = self.output_dir / "signals.jsonl"
+        self.execution_path = self.output_dir / "execution_results.jsonl"
+
+    def emit(self, decision: PelosiTailDecision, mode: str) -> None:
+        payload = {
+            "strategy": "PELOSI_DISCLOSURE_TAIL_V2",
+            "mode": mode.upper(),
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            **decision.__dict__,
+        }
+        tmp = self.latest_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(self.latest_path)
+        with self.history_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, sort_keys=True) + "\n")
+        print(json.dumps(payload, sort_keys=True))
+
+    def emit_execution(self, result) -> None:
+        payload = result.__dict__ if hasattr(result, "__dict__") else dict(result)
+        with self.execution_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, sort_keys=True) + "\n")
+        print("EXECUTION " + json.dumps(payload, sort_keys=True))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Track Nancy Pelosi disclosures and optionally tail them through Alpaca")
+    parser.add_argument("--poll-seconds", type=float, default=float(os.getenv("PELOSI_POLL_SECONDS", "60")))
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--replay-existing", action="store_true")
+    parser.add_argument("--no-alpaca-drift", action="store_true")
+    parser.add_argument("--max-notional-pct", type=float, default=float(os.getenv("PELOSI_MAX_NOTIONAL_PCT", "0.08")))
+    parser.add_argument(
+        "--execution-mode", choices=["shadow", "paper", "live"],
+        default=os.getenv("PELOSI_EXECUTION_MODE", "shadow").strip().lower(),
+    )
+    args = parser.parse_args()
+
+    client = QuiverCongressClient()
+    policy = PelosiTailPolicy(base_max_notional_pct=args.max_notional_pct)
+    poller = PelosiTailPoller(client, policy, seed_existing_on_first_run=not args.replay_existing)
+    executor = PelosiAlpacaExecutor(
+        mode=args.execution_mode,
+        max_order_notional_pct=float(os.getenv("PELOSI_MAX_ORDER_PCT", "0.08")),
+        max_symbol_equity_pct=float(os.getenv("PELOSI_MAX_SYMBOL_PCT", "0.10")),
+        max_strategy_equity_pct=float(os.getenv("PELOSI_MAX_TOTAL_PCT", "0.20")),
+        min_order_notional=float(os.getenv("PELOSI_MIN_ORDER_NOTIONAL", "5")),
+        max_pending_hours=float(os.getenv("PELOSI_MAX_PENDING_HOURS", "18")),
+    )
+    sink = SignalSink()
+    print("Broker execution probe: " + json.dumps(executor.communication_probe(), sort_keys=True))
+
+    drift_estimator = None
+    if not args.no_alpaca_drift:
+        try:
+            drift_estimator = AlpacaTradeDriftEstimator()
+        except Exception as exc:
+            print(f"Alpaca drift estimator unavailable: {exc}; continuing without drift gating")
+
+    failures = 0
+    interval = max(15.0, args.poll_seconds)
+    print(
+        "PELOSI_DISCLOSURE_TAIL_V2 | "
+        f"mode={args.execution_mode.upper()} | poll={interval:.0f}s | "
+        f"first-run-baseline={not args.replay_existing} | regular-hours-only=true"
+    )
+
+    while True:
+        try:
+            if args.execution_mode != "shadow":
+                executor.reconcile()
+                for result in executor.process_pending():
+                    sink.emit_execution(result)
+
+            disclosures = client.fetch_recent()
+            price_returns: Dict[str, float] = {}
+            if drift_estimator:
+                for d in disclosures:
+                    if d.ticker and d.ticker not in price_returns:
+                        drift = drift_estimator.estimate(d)
+                        if drift is not None:
+                            price_returns[d.ticker] = drift
+
+            original = client.fetch_recent
+            client.fetch_recent = lambda: disclosures
+            try:
+                decisions = poller.poll_once(price_returns=price_returns)
+            finally:
+                client.fetch_recent = original
+
+            for decision in decisions:
+                sink.emit(decision, args.execution_mode)
+                sink.emit_execution(executor.process(decision))
+
+            failures = 0
+            if args.once:
+                return 0
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            return 0
+        except Exception as exc:
+            failures += 1
+            delay = min(300.0, interval * (2 ** min(failures, 4)))
+            print(f"Poll failed: {type(exc).__name__}: {exc}; retrying in {delay:.0f}s")
+            if args.once:
+                return 1
+            time.sleep(delay)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
