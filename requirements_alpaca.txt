@@ -1,5 +1,6 @@
 # Alpaca Trading API Requirements
-alpaca-py>=0.8.0
+# >=0.43.5 includes the 2026 TradeAccount field migration and current MLEG request validation.
+alpaca-py>=0.43.5
 python-dotenv>=1.0.0
 numpy>=1.24.0
 pandas>=2.0.0

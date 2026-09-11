@@ -1,0 +1,75 @@
+name: V14.3 Options Integration CI
+
+on:
+  push:
+    branches: [v14-3-options-integration]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-v14-options:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+      ALPACA_API_SECRET: ${{ secrets.ALPACA_API_SECRET }}
+      ALPACA_BASE_URL: https://paper-api.alpaca.markets
+      ALPACA_DATA_URL: https://data.alpaca.markets
+      ALPACA_PAPER: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements_alpaca.txt
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'alpaca-py>=0.43.5' pytest numpy pandas pytz scipy joblib python-dotenv
+      - name: Compile new option modules
+        run: |
+          python -m py_compile \
+            execution/v14_3_mleg_execution_manager.py \
+            strategy/v14_3_options_runner.py \
+            run_v14_3_options_paper.py \
+            test_alpaca_options_connection.py \
+            validate_v14_3_recent_options.py
+      - name: Run strategy regression suite
+        run: python -m pytest -q tests
+      - name: Detect Alpaca repository credentials
+        id: alpaca-creds
+        shell: bash
+        run: |
+          if [[ -n "$ALPACA_API_KEY" && -n "$ALPACA_API_SECRET" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Alpaca credentials are configured; read-only integration checks will run."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Alpaca repository credentials are not configured; integration checks are skipped."
+          fi
+      - name: Read-only Alpaca options communication - COIN
+        if: steps.alpaca-creds.outputs.available == 'true'
+        run: python test_alpaca_options_connection.py --symbol COIN
+      - name: Read-only Alpaca options communication - TSLA
+        if: steps.alpaca-creds.outputs.available == 'true'
+        run: python test_alpaca_options_connection.py --symbol TSLA
+      - name: Recent real-option-bar validation - COIN
+        if: steps.alpaca-creds.outputs.available == 'true'
+        run: python validate_v14_3_recent_options.py --symbol COIN --days 7 --starting-equity 1000 --entry-slippage 0.025 --exit-haircut 0.025
+      - name: Recent real-option-bar validation - TSLA
+        if: steps.alpaca-creds.outputs.available == 'true'
+        run: python validate_v14_3_recent_options.py --symbol TSLA --days 7 --starting-equity 1000 --entry-slippage 0.025 --exit-haircut 0.025
+      - name: Upload option validation outputs
+        if: always() && steps.alpaca-creds.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-3-option-validation
+          path: HFT/logs/v14_3_options/validation/
+          if-no-files-found: ignore
+          retention-days: 7
+
+# Focused branch-only CI: intentionally excludes TensorFlow model tests to minimize Actions usage.
