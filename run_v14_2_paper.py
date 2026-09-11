@@ -24,8 +24,7 @@ import pytz
 
 from alpaca_config import AlpacaConfig
 from alpaca_trader import AlpacaTrader
-from strategy.v14_2_core_runner import V14_2_CoreRunner
-from strategy.v14_2_config import get_config
+from strategy.v14_2_core_runner import create_runner_for_symbol
 
 
 def main():
@@ -46,7 +45,7 @@ def main():
     # ─── Initialize existing Alpaca trader for data/account access ────────
     try:
         trader = AlpacaTrader(
-            symbol=args.symbol,
+            symbols=[args.symbol],
             model_path="HFT/model/instinct_model.keras",
             scaler_path="HFT/model/scaler.pkl",
         )
@@ -56,7 +55,6 @@ def main():
         trader = None
 
     # ─── Initialize V14.2 Core Runner ────────────────────────────────────
-    config = get_config()
     trading_client = trader.trading_client if trader else None
 
     # Set up option data client for real quotes
@@ -72,10 +70,10 @@ def main():
         except Exception as e:
             print(f"[V14.2] Option data client failed: {e}")
 
-    runner = V14_2_CoreRunner(
+    runner = create_runner_for_symbol(
+        symbol=args.symbol,
         trading_client=trading_client,
         option_data_client=option_data_client,
-        config=config,
         paper_mode=True,
         log_dir="HFT/logs/v14_2",
     )
@@ -118,8 +116,9 @@ def main():
             # ─── Get market data ─────────────────────────────────────────
             try:
                 if trader:
-                    trader._poll_latest_rest()
-                    buf_data = trader.buf_sym.to_arrays()
+                    trader.poll_latest()
+                    symbol_state = trader.sym_states.get(args.symbol.upper())
+                    buf_data = symbol_state.buf.to_arrays() if symbol_state else None
                     if not buf_data or len(buf_data.get("close", [])) < 20:
                         print("  [SKIP] Insufficient data in buffer")
                         time.sleep(args.poll_interval)

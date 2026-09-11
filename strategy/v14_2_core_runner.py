@@ -204,7 +204,7 @@ class V14_2_CoreRunner:
         }
 
         # ─── V14.3 Symbol Policy Check ──────────────────────────────────
-        if _V14_3_OK:
+        if _V14_3_OK and self.cfg.get("version") == "14.3":
             allowed, reason, size_mult = can_trade_symbol(symbol)
             if not allowed:
                 result["action"] = "SKIPPED"

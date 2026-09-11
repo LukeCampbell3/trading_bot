@@ -9,7 +9,7 @@ from tensorflow.keras.models import load_model, clone_model
 import joblib
 
 # ---------- CONFIG ----------
-API_KEY          = "Kl3Pu0HGSL8kIM4lPMGpAem3bCBsZ7If"
+API_KEY          = os.getenv("POLYGON_API_KEY", "")
 
 TICKER           = "TSLA"
 START_DATE       = "2024-11-05"

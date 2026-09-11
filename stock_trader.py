@@ -5,7 +5,7 @@
 # – NaN / Inf guard on every input that touches the model
 # – Optional bar-interval so you can shorten the sleep if you want
 
-import argparse, joblib, numpy as np, pandas as pd, time as systime
+import argparse, joblib, numpy as np, os, pandas as pd, time as systime
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timedelta, time as dttime
@@ -21,9 +21,9 @@ from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums    import OrderSide, TimeInForce
 
 # ─── USER CONFIG ─────────────────────────────────────────────────────────────
-ALPACA_KEY     = "PKVPJ9MCE23AS06OSXP7"                			           # ←  your key
-ALPACA_SECRET  = "Ojy3hoWuX1tTfNn15Hu0H06l0Lttz4cS1pgpPtqi"                # ←  your secret
-PAPER          = True               # flip to False for live
+ALPACA_KEY     = os.getenv("ALPACA_API_KEY", "")
+ALPACA_SECRET  = os.getenv("ALPACA_API_SECRET", "")
+PAPER          = os.getenv("ALPACA_PAPER", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 TICKER         = "PLTR"
 MODEL_P        = Path(r"C:/Users/jcthi/Code/HFT/model/instinct_model.keras")
 SCALER_P       = Path(r"C:/Users/jcthi/Code/HFT/model/scaler.pkl")

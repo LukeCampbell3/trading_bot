@@ -678,6 +678,22 @@ class TestCoreRunnerIntegration:
         assert "action" in result
         assert "symbol" in result
         assert result["symbol"] == "AAPL"
+        assert result.get("details", {}).get("reason") != "symbol_policy: unknown_symbol"
+
+    def test_v14_3_symbol_policy_still_blocks_unapproved_symbol(self):
+        """The V14.3 profile retains its explicit symbol allowlist."""
+        from strategy.v14_3_highvol_config import get_v14_3_config
+
+        runner = V14_2_CoreRunner(config=get_v14_3_config(), paper_mode=True)
+        result = runner.evaluate_opportunity(
+            symbol="AAPL", price=150.0, vwap=149.5, atr=1.5,
+            high_of_day=151.0, low_of_day=148.5,
+            trend_slope=0.005, volume_ratio=1.2,
+            price_5m_ago=149.8, price_15m_ago=149.0,
+        )
+
+        assert result["action"] == "SKIPPED"
+        assert result["details"]["reason"] == "symbol_policy: unknown_symbol"
 
 
 if __name__ == "__main__":
