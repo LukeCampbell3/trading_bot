@@ -34,6 +34,7 @@ from strategy.spread_quality_gate import SpreadQualityGate, OptionLeg, SpreadQua
 from strategy.package_builder import PackageBuilder, PackageResult
 from strategy.route_conditioning import RouteConditioner, RouteCandidate
 from strategy.risk_manager import RiskManager
+from strategy.dynamic_gate_controller import DynamicGateController
 
 from execution.mleg_execution_manager import (
     MlegExecutionManager, MlegOrder, MlegLeg, OrderState
@@ -138,6 +139,15 @@ class V14_2_CoreRunner:
         self.env_monitor = EnvironmentExpectancyMonitor(log_dir=str(self.log_dir))
         self.slippage_monitor = SlippageMonitor(log_dir=str(self.log_dir))
 
+        # Dynamic gate control: adaptive per-route entry thresholds +
+        # cooldown/probation recovery instead of permanent route/environment
+        # lockout. Capital protection itself stays in RiskManager, untouched.
+        self.dynamic_gates = DynamicGateController(
+            config=self.cfg,
+            route_monitor=self.route_monitor,
+            env_monitor=self.env_monitor,
+        )
+
         # ─── Option Chain Fetcher (real quotes from Alpaca) ──────────────
         self.chain_fetcher = None
         if _CHAIN_FETCHER_OK and trading_client and option_data_client:
@@ -213,31 +223,55 @@ class V14_2_CoreRunner:
             result["details"]["size_multiplier"] = size_mult
 
         # ─── Phase 1: Route Evaluation (WATCH-ONLY) ──────────────────────
+        # Route-score admission adapts per route: a route with a proven
+        # recent edge needs a slightly lower score to get watched, a cold
+        # one needs a slightly higher one (bounded — see
+        # dynamic_gate_controller.get_effective_thresholds).
+        route_universe = self.cfg["routes_allowed"] + self.cfg["routes_soft_only"]
+        route_score_overrides = {
+            route: self.dynamic_gates.get_effective_thresholds(route).get(
+                "watch_min_route_score", self.cfg["watch_min_route_score"]
+            )
+            for route in route_universe
+        }
         candidates = self.route_conditioner.evaluate_routes(
             price=price, vwap=vwap, atr=atr,
             high_of_day=high_of_day, low_of_day=low_of_day,
             trend_slope=trend_slope, volume_ratio=volume_ratio,
             price_5m_ago=price_5m_ago, price_15m_ago=price_15m_ago,
             option_liquidity=option_liquidity, iv_percentile=iv_percentile,
+            min_score_overrides=route_score_overrides,
         )
 
         # ─── Phase 2: Create watch tickets for qualifying candidates ─────
         for candidate in candidates:
-            # Check if route is allowed by telemetry
-            if not self.route_monitor.is_route_allowed(candidate.route):
+            # Route gate: ACTIVE/SOFT_SIZE_ONLY pass through; a DISABLED
+            # route is no longer permanently locked out — after a cooldown
+            # it gets a small number of size-reduced PROBATION trades to
+            # re-earn trust with fresh data instead of staying frozen.
+            route_allowed, route_state, route_size_mult = (
+                self.dynamic_gates.route_trade_allowed(candidate.route)
+            )
+            if not route_allowed:
                 result["action"] = "SKIPPED"
-                result["details"]["reason"] = f"route_disabled: {candidate.route}"
+                result["details"]["reason"] = f"route_gate_{route_state.lower()}: {candidate.route}"
                 continue
 
-            # Check environment
-            if not self.env_monitor.is_environment_allowed(self._current_environment):
+            # Same treatment for environment blocks.
+            env_allowed, env_state, env_size_mult = (
+                self.dynamic_gates.environment_trade_allowed(self._current_environment)
+            )
+            if not env_allowed:
                 result["action"] = "SKIPPED"
-                result["details"]["reason"] = "environment_blocked"
+                result["details"]["reason"] = f"environment_gate_{env_state.lower()}"
                 continue
 
-            # Create watch ticket (NEVER submits orders)
+            # Create watch ticket (NEVER submits orders). Admission
+            # thresholds (route score, ic_spread, ev/debit, liquidity) use
+            # the same confidence-adjusted values used for route scoring.
             side = TicketSide.CALL if candidate.side == "CALL" else TicketSide.PUT
             ticket = self.ticket_book.create_ticket(
+                cfg_override=self.dynamic_gates.get_effective_thresholds(candidate.route),
                 symbol=symbol,
                 route=candidate.route,
                 side=side,
@@ -250,6 +284,9 @@ class V14_2_CoreRunner:
                 option_liquidity_score=candidate.option_liquidity,
                 expected_move_to_target=candidate.expected_move,
                 estimated_debit_at_watch=1.50,  # Placeholder; real value from option chain
+                route_gate_state=route_state,
+                env_gate_state=env_state,
+                size_multiplier=min(route_size_mult, env_size_mult),
             )
 
             if ticket:
@@ -257,6 +294,7 @@ class V14_2_CoreRunner:
                 result["details"]["ticket_id"] = ticket.ticket_id
                 result["details"]["route"] = candidate.route
                 result["details"]["score"] = candidate.score
+                result["details"]["gate_state"] = route_state
 
         # ─── Phase 3: Check confirmations on existing watching tickets ───
         for ticket in self.ticket_book.get_watching_tickets(symbol):
@@ -318,6 +356,7 @@ class V14_2_CoreRunner:
             env_stress=0.1,  # TODO: compute from environment monitor
             route_score_now=ticket.route_score,
             option_quote_valid=True,  # In paper mode, assume valid
+            cfg_override=self.dynamic_gates.get_effective_thresholds(ticket.route),
         )
 
     def _attempt_execution(
@@ -329,11 +368,24 @@ class V14_2_CoreRunner:
         Fetches REAL option quotes from Alpaca when chain_fetcher is available.
         """
         # ─── Risk Pre-Check ──────────────────────────────────────────────
+        # A route with a proven recent edge gets a touch more same-underlying
+        # room; a route on caution/probation gets none extra. Capital
+        # exposure and kill switches inside RiskManager are never adjusted.
+        route_adj = self.dynamic_gates.get_route_adjustment(ticket.route)
+        same_underlying_base = self.cfg["max_same_underlying_trades_per_week"]
+        if route_adj.state == "FAVORED":
+            same_underlying_override = same_underlying_base + 1
+        elif ticket.route_gate_state == "PROBATION":
+            same_underlying_override = 1
+        else:
+            same_underlying_override = same_underlying_base
+
         risk_check = self.risk_manager.pre_trade_check(
             symbol=ticket.symbol,
             route=ticket.route,
             debit=ticket.estimated_debit_at_watch * 100,
             is_live=not self.paper_mode,
+            max_same_underlying_override=same_underlying_override,
         )
 
         if not risk_check.allowed:
@@ -411,7 +463,15 @@ class V14_2_CoreRunner:
             env_stress=0.1,
             route=ticket.route,
             account_buying_power=self._buying_power,
+            cfg_override=self.dynamic_gates.get_effective_thresholds(ticket.route),
         )
+
+        # ─── Dynamic Size Scaling ─────────────────────────────────────────
+        # SOFT_SIZE_ONLY/PROBATION routes and environments only ever *shrink*
+        # size below what PackageBuilder already bounded via buying power —
+        # this can never increase risk beyond the existing exposure cap.
+        if ticket.size_multiplier < 1.0 and package.total_contracts > 0:
+            self._scale_package_size(package, quality.spread_mid * 100, ticket.size_multiplier)
 
         # ─── Cancel stale entries before new submission ──────────────────
         self.execution_manager.cancel_all_entries_for_symbol(ticket.symbol)
@@ -471,6 +531,14 @@ class V14_2_CoreRunner:
             self.ticket_book.retire_ticket(ticket.ticket_id)
             return {"action": "REJECTED", "reason": "duplicate_order"}
 
+        # A real order is about to go out on a route/environment that's on
+        # probation — consume one of its limited re-test slots now (not at
+        # watch-creation time, when most tickets never reach a real order).
+        if ticket.route_gate_state == "PROBATION":
+            self.dynamic_gates.record_route_probation_trade(ticket.route)
+        if ticket.env_gate_state == "PROBATION":
+            self.dynamic_gates.record_env_probation_trade(self._current_environment)
+
         # Submit
         submitted = self.execution_manager.submit_order(order)
         if submitted and order.state == OrderState.FILLED:
@@ -505,6 +573,37 @@ class V14_2_CoreRunner:
             return {"action": "MISSED_FILL", "reason": "order_timeout"}
         else:
             return {"action": "REJECTED", "reason": order.cancel_reason or "submission_failed"}
+
+    @staticmethod
+    def _scale_package_size(
+        package: PackageResult, debit_per_contract: float, size_multiplier: float
+    ) -> None:
+        """
+        Shrink a built package/fallback's contract count by size_multiplier
+        (SOFT_SIZE_ONLY or PROBATION routes/environments). PackageBuilder has
+        already bounded contracts by buying power, so this only ever reduces
+        risk further — it never raises exposure beyond what was approved.
+        """
+        if debit_per_contract <= 0:
+            return
+
+        new_total = max(1, round(package.total_contracts * size_multiplier))
+        if new_total >= package.total_contracts:
+            return  # nothing to shrink
+
+        if package.is_package and package.core and package.runner:
+            core_ratio = package.core.contracts / package.total_contracts
+            package.core.contracts = max(1, round(new_total * core_ratio))
+            package.runner.contracts = max(1, new_total - package.core.contracts)
+            package.core.total_debit = package.core.contracts * debit_per_contract
+            package.runner.total_debit = package.runner.contracts * debit_per_contract
+            package.total_contracts = package.core.contracts + package.runner.contracts
+            package.total_debit = package.core.total_debit + package.runner.total_debit
+        else:
+            package.single_contracts = new_total
+            package.single_debit = new_total * debit_per_contract
+            package.total_contracts = new_total
+            package.total_debit = package.single_debit
 
     def _manage_exits(self, symbol: str, price: float, atr: float):
         """
@@ -600,6 +699,13 @@ class V14_2_CoreRunner:
             "risk_killed": self.risk_manager.is_killed(),
             "slippage_degraded": self.slippage_monitor.config.is_degraded,
             "route_stats": self.route_monitor.get_all_route_stats(),
+            "route_gate_adjustments": {
+                route: {
+                    "state": self.dynamic_gates.get_route_adjustment(route).state,
+                    "multiplier": self.dynamic_gates.get_route_adjustment(route).multiplier,
+                }
+                for route in self.cfg["routes_allowed"] + self.cfg["routes_soft_only"]
+            },
         }
 
 

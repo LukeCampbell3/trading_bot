@@ -64,10 +64,11 @@ class ConfirmationEngine:
         route_score_now: float,
         option_quote_valid: bool = True,
         timestamp: Optional[datetime] = None,
+        cfg_override: Optional[dict] = None,
     ) -> ConfirmationResult:
         """
         Check all confirmation conditions for a watching ticket.
-        
+
         Parameters:
             ticket: The watch ticket to evaluate
             current_price: Current underlying price
@@ -80,10 +81,14 @@ class ConfirmationEngine:
             route_score_now: Current route score (decay check)
             option_quote_valid: Whether next option quote is tradable
             timestamp: Optional timestamp for the check
-        
+            cfg_override: optional per-route confidence-adjusted thresholds
+                (see strategy.dynamic_gate_controller); missing keys fall
+                back to the base config this engine was constructed with.
+
         Returns:
             ConfirmationResult with pass/fail and diagnostics
         """
+        cfg = {**self.cfg, **(cfg_override or {})}
         result = ConfirmationResult()
         result.current_price = current_price
         result.mfe_velocity = mfe_velocity
@@ -112,26 +117,26 @@ class ConfirmationEngine:
         result.adverse_move_atr = adverse_move_atr
 
         # Check 1: Minimum directional move
-        if directional_move_atr < self.cfg["confirm_min_directional_atr"]:
+        if directional_move_atr < cfg["confirm_min_directional_atr"]:
             result.reason = (
                 f"insufficient_directional_move: {directional_move_atr:.4f} "
-                f"< {self.cfg['confirm_min_directional_atr']}"
+                f"< {cfg['confirm_min_directional_atr']}"
             )
             return result
 
         # Check 2: Adverse move limit
-        if adverse_move_atr > self.cfg["confirm_max_adverse_atr"]:
+        if adverse_move_atr > cfg["confirm_max_adverse_atr"]:
             result.reason = (
                 f"excessive_adverse_move: {adverse_move_atr:.4f} "
-                f"> {self.cfg['confirm_max_adverse_atr']}"
+                f"> {cfg['confirm_max_adverse_atr']}"
             )
             return result
 
         # Check 3: MFE velocity
-        if mfe_velocity < self.cfg["confirm_min_mfe_velocity"]:
+        if mfe_velocity < cfg["confirm_min_mfe_velocity"]:
             result.reason = (
                 f"insufficient_mfe_velocity: {mfe_velocity:.4f} "
-                f"< {self.cfg['confirm_min_mfe_velocity']}"
+                f"< {cfg['confirm_min_mfe_velocity']}"
             )
             return result
 
@@ -143,13 +148,13 @@ class ConfirmationEngine:
             return result
 
         # Check 5: Route decay
-        if route_score_now < self.cfg["watch_min_route_score"] * 0.9:
+        if route_score_now < cfg["watch_min_route_score"] * 0.9:
             result.reason = f"route_decayed: {route_score_now:.4f}"
             return result
 
         # Check 6: Environment stress
-        if env_stress > self.cfg["max_env_stress"]:
-            result.reason = f"env_stress_exceeded: {env_stress:.4f} > {self.cfg['max_env_stress']}"
+        if env_stress > cfg["max_env_stress"]:
+            result.reason = f"env_stress_exceeded: {env_stress:.4f} > {cfg['max_env_stress']}"
             return result
 
         # Check 7: Option quote tradability (NEXT quote, not confirmation moment)

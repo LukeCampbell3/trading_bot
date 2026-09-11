@@ -113,6 +113,22 @@ V14_3_HIGH_VOL_CORE_RUNNER = {
     "weekly_kill_loss_pct": -0.15,
     "max_open_debit_exposure_pct": 0.35,
 
+    # ─── Dynamic Gate Control ──────────────────────────────────────────────
+    # See v14_2_config.py for the full explanation. Circuit-breaker ceilings
+    # sit above the soft baselines above so capital headroom — not a fixed
+    # count — is normally what paces high-vol cadence.
+    "dynamic_gates_enabled": True,
+    "absolute_max_trades_per_day_ceiling": 10,
+    "absolute_max_trades_per_week_ceiling": 25,
+    "gate_multiplier_min": 0.85,
+    "gate_multiplier_max": 1.25,
+    "route_probation_cooldown_hours": 24,
+    "route_probation_trade_limit": 1,
+    "route_probation_size_multiplier": 0.5,
+    "env_probation_cooldown_hours": 12,
+    "env_probation_trade_limit": 1,
+    "env_probation_size_multiplier": 0.5,
+
     # ─── Symbol Gating ───────────────────────────────────────────────────
     "allowed_symbols_initial": ["COIN", "TSLA"],
     "observe_only_symbols": ["MARA", "SPCX"],

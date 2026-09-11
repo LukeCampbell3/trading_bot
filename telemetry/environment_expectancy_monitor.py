@@ -116,6 +116,10 @@ class EnvironmentExpectancyMonitor:
         """Check if symbol is allowed (not disabled due to losses)."""
         return symbol not in self._disabled_symbols
 
+    def get_environment_status(self, environment: EnvironmentState) -> str:
+        """Get raw status ("ALLOWED" or "BLOCKED") for an environment label."""
+        return self._env_status.get(environment.label, "ALLOWED")
+
     def get_environment_expectancy(self, environment: EnvironmentState) -> float:
         """Get rolling expectancy for an environment."""
         label = environment.label

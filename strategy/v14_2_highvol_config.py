@@ -99,6 +99,20 @@ V14_2_HIGH_VOL_OPTIMIZED = {
     "daily_kill_loss_pct": -0.10,    # was -0.053 - wider for vol
     "weekly_kill_loss_pct": -0.12,   # was -0.073 - wider for vol
     "max_open_debit_exposure_pct": 0.35,  # was 0.28 - slightly higher
+
+    # ─── Dynamic Gate Control ──────────────────────────────────────────────
+    # See v14_2_config.py for the full explanation.
+    "dynamic_gates_enabled": True,
+    "absolute_max_trades_per_day_ceiling": 10,
+    "absolute_max_trades_per_week_ceiling": 25,
+    "gate_multiplier_min": 0.85,
+    "gate_multiplier_max": 1.25,
+    "route_probation_cooldown_hours": 24,
+    "route_probation_trade_limit": 1,
+    "route_probation_size_multiplier": 0.5,
+    "env_probation_cooldown_hours": 12,
+    "env_probation_trade_limit": 1,
+    "env_probation_size_multiplier": 0.5,
 }
 
 

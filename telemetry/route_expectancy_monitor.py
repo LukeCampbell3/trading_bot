@@ -74,6 +74,14 @@ class RouteExpectancyMonitor:
         """Get current route status: ACTIVE, SOFT_SIZE_ONLY, or DISABLED."""
         return self._route_status.get(route, "ACTIVE")
 
+    def get_trade_count(self, route: str, window: int = 50) -> int:
+        """Number of recorded trades within the rolling window for a route."""
+        records = (
+            self._route_records_50[route] if window <= 50
+            else self._route_records_100[route]
+        )
+        return len(records)
+
     def is_route_allowed(self, route: str) -> bool:
         """Check if route is allowed for trading."""
         status = self.get_route_status(route)
